@@ -1,0 +1,7 @@
+id,comment,status
+1,"This is a comment
+that spans multiple
+lines",active
+2,"Another
+multiline comment",inactive
+3,Single line comment,active

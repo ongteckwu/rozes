@@ -1,0 +1,51 @@
+# Zig build artifacts
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.wasm
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+*.tgz
+
+# Test artifacts
+test262/
+test-results/
+coverage/
+*.profraw
+*.profdata
+
+# Bindings
+bindings/node/build/
+bindings/wasm/*.wasm
+bindings/wasm/*.js
+
+# Documentation generated files
+docs/api/
+*.html
+
+# Temporary files
+*.tmp
+*.temp
+.cache/

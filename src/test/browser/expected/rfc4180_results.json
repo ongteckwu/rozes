@@ -1,0 +1,126 @@
+{
+  "testSuite": "RFC 4180 Compliance Tests",
+  "version": "1.0",
+  "tests": {
+    "01_simple.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["name", "age", "city"],
+      "types": {
+        "name": "String",
+        "age": "Int64",
+        "city": "String"
+      },
+      "sampleData": {
+        "name": ["Alice", "Bob", "Charlie"],
+        "age": [30, 25, 35],
+        "city": ["New York", "Los Angeles", "Chicago"]
+      }
+    },
+    "02_quoted_fields.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["name", "description", "price"],
+      "types": {
+        "name": "String",
+        "description": "String",
+        "price": "Float64"
+      },
+      "sampleData": {
+        "name": ["Widget A", "Widget B", "Widget C"],
+        "description": [
+          "High quality, durable",
+          "Compact, portable",
+          "Premium, luxury"
+        ],
+        "price": [29.99, 19.99, 99.99]
+      }
+    },
+    "03_embedded_commas.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["name", "address", "phone"],
+      "notes": "Addresses contain commas but should be parsed as single fields",
+      "validation": {
+        "address[0]": "123 Main St, Apt 4B",
+        "address[2]": "789 Pine Rd, Unit 3C, Building A"
+      }
+    },
+    "04_embedded_newlines.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["id", "comment", "status"],
+      "notes": "Comments contain newlines within quoted fields",
+      "validation": {
+        "comment[0]": "This is a comment\nthat spans multiple\nlines",
+        "newlineCount[0]": 2
+      }
+    },
+    "05_escaped_quotes.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["id", "text", "author"],
+      "notes": "Double quotes escaped as \"\"",
+      "validation": {
+        "text[0]": "He said \"Hello\" to me",
+        "text[1]": "The sign read \"Stop\"",
+        "text[2]": "She whispered \"Go away\""
+      }
+    },
+    "06_crlf_endings.csv": {
+      "rowCount": 3,
+      "columnCount": 3,
+      "columns": ["name", "value", "category"],
+      "notes": "Uses CRLF (\\r\\n) line endings",
+      "lineEnding": "CRLF"
+    },
+    "07_empty_fields.csv": {
+      "rowCount": 4,
+      "columnCount": 4,
+      "columns": ["id", "name", "email", "phone"],
+      "notes": "Contains empty fields (nulls)",
+      "validation": {
+        "emptyCount": 4,
+        "nullPositions": [
+          {"row": 0, "col": "phone"},
+          {"row": 1, "col": "name"},
+          {"row": 2, "col": "email"},
+          {"row": 3, "col": "name"},
+          {"row": 3, "col": "email"},
+          {"row": 3, "col": "phone"}
+        ]
+      }
+    },
+    "08_no_header.csv": {
+      "rowCount": 3,
+      "columnCount": 4,
+      "columns": ["col0", "col1", "col2", "col3"],
+      "notes": "No header row; column names generated",
+      "options": {
+        "hasHeaders": false
+      }
+    },
+    "09_trailing_comma.csv": {
+      "rowCount": 3,
+      "columnCount": 4,
+      "columns": ["name", "age", "city", ""],
+      "notes": "Trailing commas create empty column",
+      "validation": {
+        "emptyColumnIndex": 3
+      }
+    },
+    "10_unicode_content.csv": {
+      "rowCount": 4,
+      "columnCount": 3,
+      "columns": ["name", "greeting", "emoji"],
+      "notes": "Contains Unicode (CJK, Arabic, emoji)",
+      "encoding": "UTF-8",
+      "validation": {
+        "greeting[0]": "Hello 世界",
+        "greeting[1]": "Привет мир",
+        "greeting[2]": "مرحبا العالم",
+        "emoji[0]": "👋"
+      }
+    }
+  }
+}
