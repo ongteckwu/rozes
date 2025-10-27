@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(zig build-lib:*)",
+      "Bash(cat:*)",
+      "Bash(./sawman:*)",
+      "Bash(echo:*)",
+      "Bash(zig build:*)",
+      "Read(//Users/ongteckwu/.claude/**)",
+      "Bash(for f in /Users/ongteckwu/toolchain-sawman/test262-parser-tests/early/*.js)",
+      "Bash(while read file)",
+      "Bash(done)",
+      "Bash(while read f)",
+      "Bash(xargs -I {} sh -c 'echo \"\"\"\"=== {} ===\"\"\"\" && cat {}')",
+      "Bash(shuf)",
+      "Bash(wc:*)",
+      "Bash(for f in /Users/ongteckwu/toolchain-sawman/parser/src/{resolver,loader,path_utils,package_json,graph}.zig)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

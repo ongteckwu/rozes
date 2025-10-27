@@ -414,6 +414,94 @@ pub fn parseCSV(buffer: []const u8) !DataFrame {
 }
 ```
 
+**Common Unbounded Loop Issues**:
+
+1. **For loops over slices** - Need explicit MAX check:
+```zig
+// ❌ WRONG - No explicit bound
+pub fn columnIndex(self: *const DataFrame, name: []const u8) ?usize {
+    for (self.columnDescs, 0..) |desc, i| {  // What if columnDescs is corrupted?
+        if (std.mem.eql(u8, desc.name, name)) return i;
+    }
+    return null;
+}
+
+// ✅ CORRECT - Explicit bound with while loop
+pub fn columnIndex(self: *const DataFrame, name: []const u8) ?u32 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(self.columnDescs.len <= MAX_COLS);
+
+    var i: u32 = 0;
+    while (i < MAX_COLS and i < self.columnDescs.len) : (i += 1) {
+        if (std.mem.eql(u8, self.columnDescs[i].name, name)) {
+            return i;
+        }
+    }
+
+    std.debug.assert(i <= MAX_COLS); // Post-condition
+    return null;
+}
+```
+
+2. **Nested loops** - Both need bounds:
+```zig
+// ❌ WRONG - Nested unbounded loops
+fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8) !void {
+    for (df.columns, 0..) |*col, col_idx| {
+        for (rows, 0..) |row, row_idx| {
+            // ... process
+        }
+    }
+}
+
+// ✅ CORRECT - Both loops bounded
+fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8) !void {
+    std.debug.assert(rows.len > 0);
+    std.debug.assert(df.columns.len <= MAX_COLS);
+
+    var col_idx: u32 = 0;
+    while (col_idx < MAX_COLS and col_idx < df.columns.len) : (col_idx += 1) {
+        var row_idx: u32 = 0;
+        while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+            // ... process
+        }
+        std.debug.assert(row_idx <= MAX_ROWS);
+    }
+    std.debug.assert(col_idx <= MAX_COLS);
+}
+```
+
+3. **Character-by-character parsing** - Need field length limit:
+```zig
+// ❌ WRONG - No field length limit
+pub fn nextField(self: *CSVParser) !?[]const u8 {
+    while (self.pos < self.buffer.len) {  // What if one field is 1GB?
+        const char = self.buffer[self.pos];
+        self.pos += 1;
+        try self.current_field.append(char);
+    }
+}
+
+// ✅ CORRECT - Field length bounded
+const MAX_FIELD_LENGTH: u32 = 1_000_000; // 1MB per field
+
+pub fn nextField(self: *CSVParser) !?[]const u8 {
+    std.debug.assert(self.pos <= self.buffer.len);
+
+    while (self.pos < self.buffer.len) {
+        if (self.current_field.items.len >= MAX_FIELD_LENGTH) {
+            return error.FieldTooLarge;
+        }
+
+        const char = self.buffer[self.pos];
+        self.pos += 1;
+        // ... process char
+    }
+
+    std.debug.assert(self.pos <= self.buffer.len);
+}
+```
+
 ### Pattern 2: Arena Allocator for Lifecycle Management
 
 **Use arena for grouped allocations**:
@@ -514,6 +602,74 @@ pub fn get(self: *const Series, idx: u32) ?Value {
 }
 ```
 
+**Common Assertion Patterns**:
+
+1. **Simple Getters/Setters** - Still need 2 assertions:
+```zig
+// ❌ WRONG - Only returns value
+pub fn isEmpty(self: *const Series) bool {
+    return self.length == 0;
+}
+
+// ✅ CORRECT - Has pre/post assertions
+pub fn isEmpty(self: *const Series) bool {
+    std.debug.assert(self.length <= MAX_ROWS); // Invariant check
+    const result = self.length == 0;
+    std.debug.assert(result == (self.length == 0)); // Post-condition
+    return result;
+}
+```
+
+2. **Enum Methods** - Validate enum value:
+```zig
+// ❌ WRONG - No assertions
+pub fn sizeOf(self: ValueType) ?u8 {
+    return switch (self) {
+        .Int64 => 8,
+        .Float64 => 8,
+        .Bool => 1,
+        .String, .Null => null,
+    };
+}
+
+// ✅ CORRECT - Validate enum and result
+pub fn sizeOf(self: ValueType) ?u8 {
+    std.debug.assert(@intFromEnum(self) >= 0); // Valid enum value
+
+    const result = switch (self) {
+        .Int64 => 8,
+        .Float64 => 8,
+        .Bool => 1,
+        .String, .Null => null,
+    };
+
+    std.debug.assert(result == null or result.? > 0); // Non-zero for fixed types
+    return result;
+}
+```
+
+3. **Validation Functions** - Check BEFORE errors:
+```zig
+// ❌ WRONG - Assertions after error checks
+pub fn validate(self: CSVOptions) !void {
+    std.debug.assert(self.delimiter != 0);
+
+    if (self.previewRows == 0) return error.InvalidPreviewRows;
+
+    std.debug.assert(self.previewRows > 0); // Redundant!
+}
+
+// ✅ CORRECT - Assertions before errors
+pub fn validate(self: CSVOptions) !void {
+    std.debug.assert(self.delimiter != 0); // Pre-condition
+    std.debug.assert(self.previewRows > 0 or
+                    self.previewRows <= 10_000); // Range check
+
+    if (self.previewRows == 0) return error.InvalidPreviewRows;
+    if (self.previewRows > 10_000) return error.PreviewRowsTooLarge;
+}
+```
+
 ### Explicit Error Handling
 
 **Never ignore errors**:
@@ -532,6 +688,56 @@ const df = DataFrame.create(allocator, cols, 0) catch unreachable;
 
 // ❌ Never ignore silently
 const df = DataFrame.create(allocator, cols, 0) catch null;
+```
+
+**CRITICAL: Silent Error Handling = Data Loss**:
+
+1. **Never catch and return default values**:
+```zig
+// ❌ CRITICAL DATA LOSS - User has no idea allocation failed!
+pub fn columnNames(self: *const DataFrame) []const []const u8 {
+    const allocator = self.arena.allocator();
+    var names = allocator.alloc([]const u8, self.columns.len) catch return &[_][]const u8{};
+    // ... returns empty array on allocation failure
+}
+
+// ✅ CORRECT - Propagate error to caller
+pub fn columnNames(self: *const DataFrame, allocator: std.mem.Allocator) ![]const []const u8 {
+    std.debug.assert(self.columns.len > 0);
+    std.debug.assert(self.columns.len <= MAX_COLS);
+
+    var names = try allocator.alloc([]const u8, self.columns.len);
+    // ... caller handles error
+    return names;
+}
+```
+
+2. **Never catch parse errors and default to 0**:
+```zig
+// ❌ CRITICAL DATA LOSS - "abc" becomes 0, user never knows!
+for (rows, 0..) |row, row_idx| {
+    buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch 0;
+    // ☝️ Silent data corruption
+}
+
+// ✅ CORRECT - Fail fast in Strict mode
+for (rows, 0..) |row, row_idx| {
+    buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch |err| {
+        std.log.err("Failed to parse Int64 at row {}, col {}: '{}' - {}",
+            .{row_idx, col_idx, row[col_idx], err});
+        return error.TypeMismatch;
+    };
+}
+
+// ✅ ACCEPTABLE - Lenient mode with error tracking (0.2.0)
+for (rows, 0..) |row, row_idx| {
+    buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch blk: {
+        try self.errors.append(ParseError.init(
+            row_idx, col_idx, "Invalid integer format", .TypeMismatch
+        ));
+        break :blk 0; // Explicit fallback with error logged
+    };
+}
 ```
 
 ### Functions ≤70 Lines
@@ -743,6 +949,19 @@ const MemoryTracker = struct {
 
 ## Testing Patterns
 
+### Testing Requirements
+
+**CRITICAL**: Every code change MUST include tests. No exceptions.
+
+**Test Coverage Requirements**:
+1. **Unit Tests** - Every public function must have at least one unit test
+2. **Error Case Tests** - Test error conditions (bounds, invalid input, parse failures)
+3. **Integration Tests** - Test workflows (CSV → DataFrame → operations)
+4. **Memory Leak Tests** - 1000 iterations of create/free cycles
+5. **Conformance Tests** - RFC 4180 compliance using testdata files
+
+**Test Location**: See `/CLAUDE.md` for test organization - all tests go in `src/test/`, NOT in source files
+
 ### Unit Test Template
 
 **Every public function needs a unit test**:
@@ -830,6 +1049,366 @@ test "CSV parse → DataFrame → CSV export round-trip" {
 
     // Compare (may have whitespace differences)
     try std.testing.expectEqualStrings(original_csv, exported_csv);
+}
+```
+
+### Test Examples for Common Issues
+
+**1. Test Error Handling - Never Silent Failures**:
+```zig
+test "fillDataFrame fails on type mismatch instead of silently defaulting to 0" {
+    const allocator = std.testing.allocator;
+
+    // CSV with invalid integer value
+    const csv = "age\nabc\n";  // "abc" is not a valid integer
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    // ✅ Should FAIL with error, NOT return DataFrame with age=0
+    try std.testing.expectError(error.TypeMismatch, parser.toDataFrame());
+}
+
+test "columnNames propagates allocation error instead of returning empty array" {
+    const allocator = std.testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("age", .Int64, 0),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 100);
+    defer df.deinit();
+
+    // ✅ Should return error, NOT empty array
+    // (Use FailingAllocator to test this)
+}
+```
+
+**2. Test BOM Handling**:
+```zig
+test "CSVParser skips UTF-8 BOM at start of file" {
+    const allocator = std.testing.allocator;
+
+    // CSV with BOM (0xEF 0xBB 0xBF) followed by content
+    const csv_with_bom = "\xEF\xBB\xBFname,age\nAlice,30\n";
+
+    var parser = try CSVParser.init(allocator, csv_with_bom, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // ✅ Should parse correctly, ignoring BOM
+    try std.testing.expectEqual(@as(u32, 1), df.rowCount);
+    try std.testing.expectEqualStrings("name", df.columnDescs[0].name);
+}
+```
+
+**3. Test Line Ending Handling**:
+```zig
+test "CSVParser handles CRLF line endings" {
+    const allocator = std.testing.allocator;
+
+    const csv = "name,age\r\nAlice,30\r\nBob,25\r\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), df.rowCount);
+}
+
+test "CSVParser handles CR-only line endings (old Mac format)" {
+    const allocator = std.testing.allocator;
+
+    const csv = "name,age\rAlice,30\rBob,25\r";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), df.rowCount);
+}
+
+test "CSVParser handles LF-only line endings (Unix)" {
+    const allocator = std.testing.allocator;
+
+    const csv = "name,age\nAlice,30\nBob,25\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), df.rowCount);
+}
+```
+
+**4. Test Empty CSV Handling**:
+```zig
+test "toDataFrame allows empty CSV with headers only" {
+    const allocator = std.testing.allocator;
+
+    const csv = "name,age,score\n";  // Headers but no data rows
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // ✅ Should create DataFrame with 0 rows, 3 columns
+    try std.testing.expectEqual(@as(u32, 0), df.rowCount);
+    try std.testing.expectEqual(@as(usize, 3), df.columns.len);
+    try std.testing.expectEqualStrings("name", df.columnDescs[0].name);
+    try std.testing.expectEqualStrings("age", df.columnDescs[1].name);
+    try std.testing.expectEqualStrings("score", df.columnDescs[2].name);
+}
+```
+
+**5. Test Type Inference Edge Cases**:
+```zig
+test "inferColumnType detects Float64 when preview has ints but later rows have decimals" {
+    const allocator = std.testing.allocator;
+
+    // First 50 rows are integers, row 51 has decimal
+    var csv = std.ArrayList(u8).init(allocator);
+    defer csv.deinit();
+
+    try csv.appendSlice("value\n");
+    var i: u32 = 0;
+    while (i < 50) : (i += 1) {
+        try csv.writer().print("{}\n", .{i});
+    }
+    try csv.appendSlice("50.5\n");  // Decimal at row 51
+
+    var parser = try CSVParser.init(allocator, csv.items, .{
+        .previewRows = 100,  // Preview should see row 51
+    });
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // ✅ Should detect as Float64, not Int64
+    try std.testing.expectEqual(ValueType.Float64, df.columns[0].valueType);
+}
+```
+
+**6. Test Bounded Loops**:
+```zig
+test "nextField rejects field larger than MAX_FIELD_LENGTH" {
+    const allocator = std.testing.allocator;
+
+    // Create CSV with field exceeding 1MB
+    var csv = std.ArrayList(u8).init(allocator);
+    defer csv.deinit();
+
+    try csv.appendSlice("data\n\"");
+    // Append 2MB of 'A' characters
+    var i: usize = 0;
+    while (i < 2_000_000) : (i += 1) {
+        try csv.append('A');
+    }
+    try csv.appendSlice("\"\n");
+
+    var parser = try CSVParser.init(allocator, csv.items, .{});
+    defer parser.deinit();
+
+    // ✅ Should reject with FieldTooLarge error
+    try std.testing.expectError(error.FieldTooLarge, parser.toDataFrame());
+}
+```
+
+**7. Test RFC 4180 Conformance** (using testdata files):
+```zig
+test "RFC 4180: 01_simple.csv" {
+    const allocator = std.testing.allocator;
+    const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // Validate structure
+    try std.testing.expectEqual(@as(u32, 3), df.rowCount);
+    try std.testing.expectEqual(@as(usize, 3), df.columns.len);
+    try std.testing.expectEqualStrings("name", df.columnDescs[0].name);
+
+    // Validate data
+    const age_col = df.column("age").?;
+    const ages = age_col.asInt64().?;
+    try std.testing.expectEqual(@as(i64, 30), ages[0]);
+    try std.testing.expectEqual(@as(i64, 25), ages[1]);
+    try std.testing.expectEqual(@as(i64, 35), ages[2]);
+}
+
+test "RFC 4180: 04_embedded_newlines.csv - quoted fields with newlines" {
+    const allocator = std.testing.allocator;
+    const csv = "name,bio\n\"Alice\",\"Line 1\nLine 2\"\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), df.rowCount);
+    // Bio should contain the newline
+    const bio_col = df.column("bio").?;
+    // ✅ Should preserve embedded newline in quoted field
+}
+```
+
+---
+
+## CSV Parsing - Data Processing Correctness
+
+### RFC 4180 Compliance Checklist
+
+**MUST HANDLE**:
+1. ✅ Quoted fields with embedded delimiters
+2. ✅ Quoted fields with embedded newlines
+3. ✅ Escaped quotes (`""` → `"`)
+4. ✅ CRLF line endings
+5. ⚠️ CR-only line endings (old Mac format)
+6. ❌ UTF-8 BOM detection (0xEF 0xBB 0xBF)
+7. ✅ Empty fields
+8. ⚠️ Empty CSV with headers only
+
+### Critical CSV Parsing Issues
+
+**1. BOM Detection**:
+```zig
+// ❌ MISSING - CSV may start with BOM
+pub fn init(allocator: std.mem.Allocator, buffer: []const u8, opts: CSVOptions) !CSVParser {
+    return CSVParser{
+        .buffer = buffer,
+        .pos = 0,  // Starts at 0, doesn't check for BOM
+        // ...
+    };
+}
+
+// ✅ CORRECT - Skip BOM if present
+pub fn init(allocator: std.mem.Allocator, buffer: []const u8, opts: CSVOptions) !CSVParser {
+    std.debug.assert(buffer.len > 0);
+    std.debug.assert(buffer.len <= MAX_CSV_SIZE);
+
+    // Skip UTF-8 BOM if present
+    const start_pos: u32 = if (buffer.len >= 3 and
+        buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF)
+        3
+    else
+        0;
+
+    return CSVParser{
+        .buffer = buffer,
+        .pos = start_pos,  // ✅ Skip BOM
+        // ...
+    };
+}
+```
+
+**2. Line Ending Normalization** - Avoid code duplication:
+```zig
+// ❌ WRONG - CRLF handling duplicated in 3 places
+} else if (char == '\n' or char == '\r') {
+    if (char == '\r' and self.pos < self.buffer.len and self.buffer[self.pos] == '\n') {
+        self.pos += 1; // Skip LF in CRLF
+    }
+    // ... repeated 3 times in different states!
+}
+
+// ✅ CORRECT - Centralized line ending detection
+fn skipLineEnding(self: *CSVParser) void {
+    std.debug.assert(self.pos <= self.buffer.len);
+
+    if (self.pos >= self.buffer.len) return;
+
+    const char = self.buffer[self.pos];
+    if (char == '\r') {
+        self.pos += 1;
+        // Check for CRLF
+        if (self.pos < self.buffer.len and self.buffer[self.pos] == '\n') {
+            self.pos += 1;
+        }
+    } else if (char == '\n') {
+        self.pos += 1;
+    }
+}
+
+// Use consistently:
+} else if (char == '\n' or char == '\r') {
+    self.skipLineEnding();
+    self.state = .EndOfRecord;
+    return null;
+}
+```
+
+**3. Empty CSV Handling**:
+```zig
+// ❌ WRONG - Returns error for headers-only CSV
+if (data_rows.len == 0) {
+    return error.NoDataRows;  // User just wanted schema!
+}
+
+// ✅ CORRECT - Allow empty DataFrames
+if (data_rows.len == 0) {
+    // Create empty DataFrame with columns but no rows
+    var df = try DataFrame.create(self.allocator, col_descs, 0);
+    return df;
+}
+```
+
+**4. Type Inference Edge Cases**:
+```zig
+// ❌ WRONG - 100 row preview too small for 1M row file
+const preview_count = @min(self.opts.previewRows, @as(u32, @intCast(data_rows.len)));
+
+// ✅ BETTER - Adaptive preview based on file size
+const preview_count = if (data_rows.len < 1000)
+    @intCast(data_rows.len)
+else if (data_rows.len < 100_000)
+    @min(self.opts.previewRows, @intCast(data_rows.len / 10)) // 10% sample
+else
+    @min(self.opts.previewRows * 10, 10_000); // 1% sample, capped at 10K
+```
+
+**5. Int vs Float Ambiguity**:
+```zig
+// ❌ WRONG - "42" parses as Int, but row 101 might have "42.5"
+if (all_int) return .Int64;
+if (all_float) return .Float64;
+
+// ✅ CORRECT - Check for decimal indicators first
+var has_decimals = false;
+for (rows) |row| {
+    if (col_idx >= row.len) continue;
+    const field = row[col_idx];
+    if (field.len == 0) continue;
+
+    if (std.mem.indexOfScalar(u8, field, '.') != null or
+        std.mem.indexOfScalar(u8, field, 'e') != null or
+        std.mem.indexOfScalar(u8, field, 'E') != null) {
+        has_decimals = true;
+        break;
+    }
+}
+
+// If any field has decimal, treat whole column as Float64
+if (has_decimals) {
+    // Validate all fields parse as float
+    return .Float64;
+} else {
+    // Validate all fields parse as int
+    return .Int64;
 }
 ```
 
