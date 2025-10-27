@@ -379,6 +379,8 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
 
     var all_int = true;
     var all_float = true;
+    var all_bool = true;
+    var all_empty = true;
 
     for (rows) |row| {
         if (col_idx >= row.len) continue;
@@ -386,15 +388,25 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
         const field = row[col_idx];
         if (field.len == 0) continue; // Skip empty fields
 
+        all_empty = false; // Found non-empty field
+
         if (!tryParseInt64(field)) all_int = false;
         if (!tryParseFloat64(field)) all_float = false;
+        if (!tryParseBool(field)) all_bool = false;
     }
 
+    // If all fields are empty, default to String
+    if (all_empty) return .String;
+
+    // Prefer Bool over Int64 (since "1" and "0" parse as both)
+    if (all_bool) return .Bool;
+
+    // Prefer Int64 over Float64 for pure integers
     if (all_int) return .Int64;
     if (all_float) return .Float64;
 
-    // MVP: String type not supported - this indicates type mismatch
-    return error.TypeMismatch;
+    // Default to String for mixed or non-numeric data
+    return .String;
 }
 
 /// Try to parse as Int64
@@ -417,46 +429,132 @@ fn tryParseFloat64(field: []const u8) bool {
     return true;
 }
 
-/// Fill DataFrame with parsed data
+/// Try to parse as Bool
+fn tryParseBool(field: []const u8) bool {
+    std.debug.assert(field.len <= MAX_FIELD_LENGTH); // Field size check
+
+    if (field.len == 0) return false;
+
+    // Case-insensitive comparison for common boolean values
+    if (std.ascii.eqlIgnoreCase(field, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "false")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "yes")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "no")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "1")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "0")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "t")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "f")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "y")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "n")) return true;
+
+    return false;
+}
+
+/// Parse boolean value from string
+fn parseBool(field: []const u8) !bool {
+    std.debug.assert(field.len > 0);
+    std.debug.assert(field.len <= MAX_FIELD_LENGTH);
+
+    // True values
+    if (std.ascii.eqlIgnoreCase(field, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "yes")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "1")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "t")) return true;
+    if (std.ascii.eqlIgnoreCase(field, "y")) return true;
+
+    // False values
+    if (std.ascii.eqlIgnoreCase(field, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(field, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(field, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(field, "f")) return false;
+    if (std.ascii.eqlIgnoreCase(field, "n")) return false;
+
+    return error.InvalidBoolean;
+}
+
+/// Fill Int64 column with data from CSV rows
+fn fillInt64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !void {
+    std.debug.assert(col.value_type == .Int64); // Pre-condition #1
+    const buffer = col.asInt64Buffer() orelse return error.TypeMismatch;
+
+    for (rows, 0..) |row, row_idx| {
+        if (col_idx >= row.len or row[col_idx].len == 0) {
+            buffer[row_idx] = 0; // Empty = 0
+        } else {
+            buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch |err| {
+                std.log.err("Failed to parse Int64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+                return error.TypeMismatch;
+            };
+        }
+    }
+
+    std.debug.assert(buffer.len >= rows.len); // Post-condition #2
+}
+
+/// Fill Float64 column with data from CSV rows
+fn fillFloat64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !void {
+    std.debug.assert(col.value_type == .Float64); // Pre-condition #1
+    const buffer = col.asFloat64Buffer() orelse return error.TypeMismatch;
+
+    for (rows, 0..) |row, row_idx| {
+        if (col_idx >= row.len or row[col_idx].len == 0) {
+            buffer[row_idx] = 0.0; // Empty = 0.0
+        } else {
+            buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch |err| {
+                std.log.err("Failed to parse Float64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+                return error.TypeMismatch;
+            };
+        }
+    }
+
+    std.debug.assert(buffer.len >= rows.len); // Post-condition #2
+}
+
+/// Fill Bool column with data from CSV rows
+fn fillBoolColumn(col: *Series, rows: []const [][]const u8, col_idx: usize) !void {
+    std.debug.assert(col.value_type == .Bool); // Pre-condition #1
+    const buffer = col.asBoolBuffer() orelse return error.TypeMismatch;
+
+    for (rows, 0..) |row, row_idx| {
+        if (col_idx >= row.len or row[col_idx].len == 0) {
+            buffer[row_idx] = false; // Empty = false
+        } else {
+            buffer[row_idx] = parseBool(row[col_idx]) catch |err| {
+                std.log.err("Failed to parse Bool at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+                return error.TypeMismatch;
+            };
+        }
+    }
+
+    std.debug.assert(buffer.len >= rows.len); // Post-condition #2
+}
+
+/// Fill String column with data from CSV rows
+fn fillStringColumn(col: *Series, rows: []const [][]const u8, col_idx: usize, allocator: std.mem.Allocator) !void {
+    std.debug.assert(col.value_type == .String); // Pre-condition #1
+
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
+        const field = if (col_idx < row.len) row[col_idx] else "";
+        try col.appendString(allocator, field);
+    }
+
+    std.debug.assert(row_idx == rows.len); // Post-condition #2
+}
+
+/// Fill DataFrame with data from CSV rows
 fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []ValueType) !void {
-    std.debug.assert(rows.len > 0); // Need data
-    std.debug.assert(column_types.len == df.columns.len); // Match column count
+    std.debug.assert(rows.len > 0); // Pre-condition #1
+    std.debug.assert(column_types.len == df.columns.len); // Pre-condition #2
 
     for (df.columns, 0..) |*col, col_idx| {
-        const col_type = column_types[col_idx];
-
-        // Get buffer and fill with data
-        switch (col_type) {
-            .Int64 => {
-                const buffer = col.asInt64Buffer() orelse return error.TypeMismatch;
-                for (rows, 0..) |row, row_idx| {
-                    if (col_idx >= row.len or row[col_idx].len == 0) {
-                        buffer[row_idx] = 0; // Explicit null representation
-                    } else {
-                        buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch |err| {
-                            std.log.err("Failed to parse Int64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
-                            return error.TypeMismatch; // Fail fast in Strict mode
-                        };
-                    }
-                }
-            },
-            .Float64 => {
-                const buffer = col.asFloat64Buffer() orelse return error.TypeMismatch;
-                for (rows, 0..) |row, row_idx| {
-                    if (col_idx >= row.len or row[col_idx].len == 0) {
-                        buffer[row_idx] = 0.0; // Explicit null representation
-                    } else {
-                        buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch |err| {
-                            std.log.err("Failed to parse Float64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
-                            return error.TypeMismatch; // Fail fast in Strict mode
-                        };
-                    }
-                }
-            },
-            else => {
-                // String type not supported in MVP
-                return error.UnsupportedType;
-            },
+        switch (column_types[col_idx]) {
+            .Int64 => try fillInt64Column(col, rows, col_idx),
+            .Float64 => try fillFloat64Column(col, rows, col_idx),
+            .Bool => try fillBoolColumn(col, rows, col_idx),
+            .String => try fillStringColumn(col, rows, col_idx, df.arena.allocator()),
+            else => return error.UnsupportedType,
         }
     }
 }
@@ -742,30 +840,333 @@ test "skipLineEnding handles CR only (old Mac format)" {
     try testing.expectEqual(@as(u32, 2), df.row_count);
 }
 
-test "fillDataFrame fails on invalid Int64 instead of defaulting to 0" {
+test "mixed numeric/string data inferred as String column" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // CSV with invalid integer value
-    const csv = "age\n30\nabc\n"; // "abc" is not a valid integer
+    // CSV with mixed integer and string values
+    const csv = "age\n30\nabc\n"; // "abc" cannot be parsed as integer
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
 
-    // Should FAIL with error, NOT return DataFrame with age=0
-    try testing.expectError(error.TypeMismatch, parser.toDataFrame());
+    // Should succeed and infer as String column (not Int64)
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 2), df.row_count);
+    try testing.expectEqual(@as(usize, 1), df.columns.len);
+
+    // Verify column type is String
+    const col = df.column("age").?;
+    try testing.expectEqual(ValueType.String, col.value_type);
+
+    // Verify data is preserved as strings
+    try testing.expectEqualStrings("30", col.getString(0).?);
+    try testing.expectEqualStrings("abc", col.getString(1).?);
 }
 
-test "fillDataFrame fails on invalid Float64 instead of defaulting to 0.0" {
+test "mixed float/string data inferred as String column" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // CSV with invalid float value
+    // CSV with mixed float and string values
     const csv = "score\n95.5\ninvalid\n";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
 
-    // Should FAIL with error, NOT return DataFrame with score=0.0
-    try testing.expectError(error.TypeMismatch, parser.toDataFrame());
+    // Should succeed and infer as String column (not Float64)
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 2), df.row_count);
+
+    // Verify column type is String
+    const col = df.column("score").?;
+    try testing.expectEqual(ValueType.String, col.value_type);
+
+    // Verify data is preserved as strings
+    try testing.expectEqualStrings("95.5", col.getString(0).?);
+    try testing.expectEqualStrings("invalid", col.getString(1).?);
+}
+
+// String Column Parsing Tests
+
+test "pure string column parsing" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "name,city\nAlice,NYC\nBob,LA\nCharlie,Chicago\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 3), df.row_count);
+    try testing.expectEqual(@as(usize, 2), df.columns.len);
+
+    // Verify both columns are String type
+    const name_col = df.column("name").?;
+    const city_col = df.column("city").?;
+    try testing.expectEqual(ValueType.String, name_col.value_type);
+    try testing.expectEqual(ValueType.String, city_col.value_type);
+
+    // Verify data
+    try testing.expectEqualStrings("Alice", name_col.getString(0).?);
+    try testing.expectEqualStrings("NYC", city_col.getString(0).?);
+    try testing.expectEqualStrings("Bob", name_col.getString(1).?);
+    try testing.expectEqualStrings("LA", city_col.getString(1).?);
+}
+
+test "empty string fields in string column" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Use comma to create empty field (not blank line)
+    const csv = "name,city\nAlice,\n,NYC\nBob,LA\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 3), df.row_count);
+
+    const name_col = df.column("name").?;
+    const city_col = df.column("city").?;
+    try testing.expectEqual(ValueType.String, name_col.value_type);
+    try testing.expectEqual(ValueType.String, city_col.value_type);
+
+    // Verify empty strings are preserved
+    try testing.expectEqualStrings("Alice", name_col.getString(0).?);
+    try testing.expectEqualStrings("", city_col.getString(0).?); // Empty city
+
+    try testing.expectEqualStrings("", name_col.getString(1).?); // Empty name
+    try testing.expectEqualStrings("NYC", city_col.getString(1).?);
+
+    try testing.expectEqualStrings("Bob", name_col.getString(2).?);
+    try testing.expectEqualStrings("LA", city_col.getString(2).?);
+}
+
+test "UTF-8 strings in CSV" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "message\nHello\n世界\n🌹\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 3), df.row_count);
+
+    const col = df.column("message").?;
+    try testing.expectEqual(ValueType.String, col.value_type);
+
+    // Verify UTF-8 strings are preserved
+    try testing.expectEqualStrings("Hello", col.getString(0).?);
+    try testing.expectEqualStrings("世界", col.getString(1).?);
+    try testing.expectEqualStrings("🌹", col.getString(2).?);
+}
+
+test "mixed column types: numeric and string" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "name,age,city\nAlice,30,NYC\nBob,25,LA\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 2), df.row_count);
+    try testing.expectEqual(@as(usize, 3), df.columns.len);
+
+    // Verify column types
+    const name_col = df.column("name").?;
+    const age_col = df.column("age").?;
+    const city_col = df.column("city").?;
+
+    try testing.expectEqual(ValueType.String, name_col.value_type);
+    try testing.expectEqual(ValueType.Int64, age_col.value_type); // Pure numeric
+    try testing.expectEqual(ValueType.String, city_col.value_type);
+
+    // Verify data
+    try testing.expectEqualStrings("Alice", name_col.getString(0).?);
+    try testing.expectEqual(@as(i64, 30), age_col.asInt64().?[0]);
+    try testing.expectEqualStrings("NYC", city_col.getString(0).?);
+}
+
+test "quoted string fields (basic)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "name\n\"Alice\"\n\"Bob Smith\"\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 2), df.row_count);
+
+    const col = df.column("name").?;
+
+    // Quoted strings should have quotes removed by parser
+    try testing.expectEqualStrings("Alice", col.getString(0).?);
+    try testing.expectEqualStrings("Bob Smith", col.getString(1).?);
+}
+
+// Boolean Column Parsing Tests
+
+test "tryParseBool recognizes true values" {
+    const testing = std.testing;
+
+    try testing.expect(tryParseBool("true"));
+    try testing.expect(tryParseBool("TRUE"));
+    try testing.expect(tryParseBool("True"));
+    try testing.expect(tryParseBool("yes"));
+    try testing.expect(tryParseBool("YES"));
+    try testing.expect(tryParseBool("1"));
+    try testing.expect(tryParseBool("t"));
+    try testing.expect(tryParseBool("T"));
+    try testing.expect(tryParseBool("y"));
+    try testing.expect(tryParseBool("Y"));
+}
+
+test "tryParseBool recognizes false values" {
+    const testing = std.testing;
+
+    try testing.expect(tryParseBool("false"));
+    try testing.expect(tryParseBool("FALSE"));
+    try testing.expect(tryParseBool("False"));
+    try testing.expect(tryParseBool("no"));
+    try testing.expect(tryParseBool("NO"));
+    try testing.expect(tryParseBool("0"));
+    try testing.expect(tryParseBool("f"));
+    try testing.expect(tryParseBool("F"));
+    try testing.expect(tryParseBool("n"));
+    try testing.expect(tryParseBool("N"));
+}
+
+test "tryParseBool rejects non-boolean values" {
+    const testing = std.testing;
+
+    try testing.expect(!tryParseBool("hello"));
+    try testing.expect(!tryParseBool("2"));
+    try testing.expect(!tryParseBool("maybe"));
+    try testing.expect(!tryParseBool(""));
+}
+
+test "parseBool parses true values correctly" {
+    const testing = std.testing;
+
+    try testing.expectEqual(true, try parseBool("true"));
+    try testing.expectEqual(true, try parseBool("TRUE"));
+    try testing.expectEqual(true, try parseBool("yes"));
+    try testing.expectEqual(true, try parseBool("1"));
+    try testing.expectEqual(true, try parseBool("t"));
+    try testing.expectEqual(true, try parseBool("y"));
+}
+
+test "parseBool parses false values correctly" {
+    const testing = std.testing;
+
+    try testing.expectEqual(false, try parseBool("false"));
+    try testing.expectEqual(false, try parseBool("FALSE"));
+    try testing.expectEqual(false, try parseBool("no"));
+    try testing.expectEqual(false, try parseBool("0"));
+    try testing.expectEqual(false, try parseBool("f"));
+    try testing.expectEqual(false, try parseBool("n"));
+}
+
+test "boolean column parsing" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "active,verified\ntrue,yes\nfalse,no\n1,0\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 3), df.row_count);
+    try testing.expectEqual(@as(usize, 2), df.columns.len);
+
+    // Verify both columns are Bool type
+    const active_col = df.column("active").?;
+    const verified_col = df.column("verified").?;
+    try testing.expectEqual(ValueType.Bool, active_col.value_type);
+    try testing.expectEqual(ValueType.Bool, verified_col.value_type);
+
+    // Verify data
+    const active_data = active_col.asBool().?;
+    const verified_data = verified_col.asBool().?;
+
+    try testing.expectEqual(true, active_data[0]);
+    try testing.expectEqual(true, verified_data[0]);
+
+    try testing.expectEqual(false, active_data[1]);
+    try testing.expectEqual(false, verified_data[1]);
+
+    try testing.expectEqual(true, active_data[2]);
+    try testing.expectEqual(false, verified_data[2]);
+}
+
+test "mixed column types with boolean" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "name,age,active\nAlice,30,true\nBob,25,false\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // Verify column types
+    const name_col = df.column("name").?;
+    const age_col = df.column("age").?;
+    const active_col = df.column("active").?;
+
+    try testing.expectEqual(ValueType.String, name_col.value_type);
+    try testing.expectEqual(ValueType.Int64, age_col.value_type);
+    try testing.expectEqual(ValueType.Bool, active_col.value_type);
+
+    // Verify boolean data
+    const active_data = active_col.asBool().?;
+    try testing.expectEqual(true, active_data[0]);
+    try testing.expectEqual(false, active_data[1]);
+}
+
+test "empty boolean fields default to false" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const csv = "active\ntrue\n\nfalse\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    const col = df.column("active").?;
+    const data = col.asBool().?;
+
+    try testing.expectEqual(true, data[0]);
+    try testing.expectEqual(false, data[1]); // Empty field defaults to false
+    try testing.expectEqual(false, data[2]);
 }

@@ -25,6 +25,9 @@ const RowRef = @import("dataframe.zig").RowRef;
 /// Maximum number of columns for operations
 const MAX_COLS: u32 = 10_000;
 
+/// Maximum number of rows for operations
+const MAX_ROWS: u32 = 4_000_000_000;
+
 /// Selects a subset of columns from a DataFrame
 ///
 /// Args:
@@ -50,7 +53,11 @@ pub fn select(
     }
 
     // Create column descriptors for selected columns
-    const arena_allocator = df.arena.allocator();
+    // Note: df is const, but we need allocator from the arena.
+    // The arena itself is a value in DataFrame, so we need to cast away const
+    // for the allocator() call which requires mutable access.
+    const arena_ptr = @constCast(&df.arena);
+    const arena_allocator = arena_ptr.allocator();
     var col_descs = try arena_allocator.alloc(ColumnDesc, column_names.len);
 
     var col_idx: u32 = 0;
@@ -92,7 +99,23 @@ pub fn select(
                 const dst_data = dst_col.asBool().?;
                 @memcpy(dst_data[0..src_data.len], src_data);
             },
-            else => return error.UnsupportedType,
+            .String => {
+                const src_string_col = src_col.asStringColumn().?;
+                var dst_string_col = dst_col.asStringColumnMut().?;
+
+                // Copy each string from source to destination
+                const df_arena = @constCast(&new_df.arena);
+                const df_arena_allocator = df_arena.allocator();
+
+                var str_idx: u32 = 0;
+                while (str_idx < MAX_ROWS and str_idx < src_string_col.count) : (str_idx += 1) {
+                    const str = src_string_col.get(str_idx);
+                    try dst_string_col.append(df_arena_allocator, str);
+                }
+
+                std.debug.assert(str_idx == src_string_col.count); // Copied all strings
+            },
+            .Null => {}, // No data to copy
         }
     }
 
@@ -114,16 +137,18 @@ pub fn drop(
     column_names: []const []const u8,
 ) !DataFrame {
     std.debug.assert(column_names.len > 0); // Need at least one column to drop
-    std.debug.assert(column_names.len < df.columnCount()); // Can't drop all columns
+    std.debug.assert(df.columnCount() > 0); // DataFrame must have columns
 
+    // Check if trying to drop all columns (return error instead of asserting)
     if (column_names.len >= df.columnCount()) {
         return error.CannotDropAllColumns;
     }
 
     // Build list of columns to keep
-    const arena_allocator = df.arena.allocator();
-    var keep_names = std.ArrayList([]const u8).init(arena_allocator);
-    defer keep_names.deinit();
+    const arena_ptr = @constCast(&df.arena);
+    const arena_allocator = arena_ptr.allocator();
+    var keep_names = try arena_allocator.alloc([]const u8, df.columnCount());
+    var keep_count: usize = 0;
 
     // Check each column in DataFrame
     var col_idx: u32 = 0;
@@ -141,15 +166,16 @@ pub fn drop(
 
         // Keep if not in drop list
         if (!should_drop) {
-            try keep_names.append(col_name);
+            keep_names[keep_count] = col_name;
+            keep_count += 1;
         }
     }
 
     std.debug.assert(col_idx == df.columnCount()); // Checked all columns
-    std.debug.assert(keep_names.items.len > 0); // Must keep at least one column
+    std.debug.assert(keep_count > 0); // Must keep at least one column
 
     // Use select() to create DataFrame with remaining columns
-    return select(df, keep_names.items);
+    return select(df, keep_names[0..keep_count]);
 }
 
 /// Filter predicate function type
@@ -216,7 +242,16 @@ pub fn filter(
                         const dst_data = dst_col.asBool().?;
                         dst_data[dst_idx] = src_data[row_idx];
                     },
-                    else => return error.UnsupportedType,
+                    .String => {
+                        const src_string_col = src_col.asStringColumn().?;
+                        var dst_string_col = dst_col.asStringColumnMut().?;
+
+                        const str = src_string_col.get(row_idx);
+                        const df_arena = @constCast(&new_df.arena);
+                        const df_arena_allocator = df_arena.allocator();
+                        try dst_string_col.append(df_arena_allocator, str);
+                    },
+                    .Null => {}, // No data to copy
                 }
             }
 
@@ -404,7 +439,7 @@ test "filter keeps only matching rows" {
     try df.setRowCount(3);
 
     // Filter: age > 28
-    const filtered = try filter(&df, struct {
+    var filtered = try filter(&df, struct {
         fn pred(row: RowRef) bool {
             const age = row.getInt64("age") orelse return false;
             return age > 28;
@@ -522,4 +557,101 @@ test "mean returns null for empty DataFrame" {
 
     const avg = try mean(&df, "value");
     try testing.expectEqual(@as(?f64, null), avg);
+}
+
+// Integration Tests for String DataFrame Operations
+
+test "Integration: select DataFrame with string column" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("name", .String, 0),
+        ColumnDesc.init("age", .Int64, 1),
+        ColumnDesc.init("city", .String, 2),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 5);
+    defer df.deinit();
+
+    // Populate data
+    const name_col = df.columnMut("name").?;
+    try name_col.appendString(allocator, "Alice");
+    try name_col.appendString(allocator, "Bob");
+
+    const age_col = df.columnMut("age").?;
+    const ages = age_col.asInt64Buffer().?;
+    ages[0] = 30;
+    ages[1] = 25;
+
+    const city_col = df.columnMut("city").?;
+    try city_col.appendString(allocator, "NYC");
+    try city_col.appendString(allocator, "LA");
+
+    try df.setRowCount(2);
+
+    // Select only string columns
+    var selected = try select(&df, &[_][]const u8{ "name", "city" });
+    defer selected.deinit();
+
+    try testing.expectEqual(@as(usize, 2), selected.columnCount());
+    try testing.expectEqual(@as(u32, 2), selected.len());
+
+    // Verify string data was copied correctly
+    const sel_name = selected.column("name").?;
+    try testing.expectEqualStrings("Alice", sel_name.getString(0).?);
+    try testing.expectEqualStrings("Bob", sel_name.getString(1).?);
+
+    const sel_city = selected.column("city").?;
+    try testing.expectEqualStrings("NYC", sel_city.getString(0).?);
+    try testing.expectEqualStrings("LA", sel_city.getString(1).?);
+}
+
+test "Integration: filter DataFrame with string column" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("name", .String, 0),
+        ColumnDesc.init("age", .Int64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 10);
+    defer df.deinit();
+
+    // Populate data
+    const name_col = df.columnMut("name").?;
+    try name_col.appendString(allocator, "Alice");
+    try name_col.appendString(allocator, "Bob");
+    try name_col.appendString(allocator, "Charlie");
+
+    const age_col = df.columnMut("age").?;
+    const ages = age_col.asInt64Buffer().?;
+    ages[0] = 30;
+    ages[1] = 25;
+    ages[2] = 35;
+
+    try df.setRowCount(3);
+
+    // Filter: age > 28
+    var filtered = try filter(&df, struct {
+        fn pred(row: RowRef) bool {
+            const age = row.getInt64("age") orelse return false;
+            return age > 28;
+        }
+    }.pred);
+    defer filtered.deinit();
+
+    // Should have 2 rows (Alice=30, Charlie=35)
+    try testing.expectEqual(@as(u32, 2), filtered.len());
+
+    // Verify string data was copied correctly
+    const filt_names = filtered.column("name").?;
+    try testing.expectEqualStrings("Alice", filt_names.getString(0).?);
+    try testing.expectEqualStrings("Charlie", filt_names.getString(1).?);
+
+    const filt_ages = filtered.column("age").?;
+    const filt_ages_data = filt_ages.asInt64().?;
+    try testing.expectEqual(@as(i64, 30), filt_ages_data[0]);
+    try testing.expectEqual(@as(i64, 35), filt_ages_data[1]);
 }

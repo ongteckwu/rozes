@@ -15,7 +15,9 @@
       "Bash(xargs -I {} sh -c 'echo \"\"\"\"=== {} ===\"\"\"\" && cat {}')",
       "Bash(shuf)",
       "Bash(wc:*)",
-      "Bash(for f in /Users/ongteckwu/toolchain-sawman/parser/src/{resolver,loader,path_utils,package_json,graph}.zig)"
+      "Bash(for f in /Users/ongteckwu/toolchain-sawman/parser/src/{resolver,loader,path_utils,package_json,graph}.zig)",
+      "Bash(find:*)",
+      "Bash(wasm-opt:*)"
     ],
     "deny": [],
     "ask": []

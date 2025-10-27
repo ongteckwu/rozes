@@ -4,11 +4,21 @@
 //! WebAssembly-specific export functions for JavaScript interaction.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const rozes = @import("rozes.zig");
 const DataFrame = rozes.DataFrame;
 const CSVParser = rozes.CSVParser;
 const CSVOptions = rozes.CSVOptions;
 const ValueType = rozes.ValueType;
+
+// Conditional logging: only enabled in Debug mode
+const enable_logging = builtin.mode == .Debug;
+
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (enable_logging) {
+        std.log.err(fmt, args);
+    }
+}
 
 // ============================================================================
 // Constants
@@ -16,6 +26,16 @@ const ValueType = rozes.ValueType;
 
 const MAX_DATAFRAMES: u32 = 1000; // Maximum concurrent DataFrames
 const INVALID_HANDLE: i32 = -1;
+
+// String interning: Deduplicate error messages (saves ~1-2 KB)
+const ErrorStrings = struct {
+    pub const csv_parse_failed = "CSV parsing failed";
+    pub const out_of_memory = "Out of memory";
+    pub const invalid_format = "Invalid format";
+    pub const invalid_handle = "Invalid handle";
+    pub const column_not_found = "Column not found";
+    pub const type_mismatch = "Type mismatch";
+};
 
 // ============================================================================
 // Error Codes (returned to JavaScript)
@@ -50,55 +70,79 @@ pub const ErrorCode = enum(i32) {
 // ============================================================================
 
 const DataFrameRegistry = struct {
-    frames: [MAX_DATAFRAMES]?*DataFrame,
-    next_id: u32,
+    frames: std.ArrayList(?*DataFrame),
     allocator: std.mem.Allocator,
 
-    fn init(allocator: std.mem.Allocator) DataFrameRegistry {
-        const reg = DataFrameRegistry{
-            .frames = [_]?*DataFrame{null} ** MAX_DATAFRAMES,
-            .next_id = 0,
+    fn init(allocator: std.mem.Allocator) !DataFrameRegistry {
+        const frames = try std.ArrayList(?*DataFrame).initCapacity(allocator, 4);
+
+        return DataFrameRegistry{
+            .frames = frames,
             .allocator = allocator,
         };
-        return reg;
+    }
+
+    fn deinit(self: *DataFrameRegistry) void {
+        self.frames.deinit();
     }
 
     fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
-        std.debug.assert(self.next_id < MAX_DATAFRAMES * 2); // Pre-condition: No overflow
         std.debug.assert(@intFromPtr(df) != 0); // Pre-condition: Non-null DataFrame
+        std.debug.assert(self.frames.items.len < MAX_DATAFRAMES); // Pre-condition: Not at max
 
+        // Look for empty slot (reuse freed handles)
         var i: u32 = 0;
-        while (i < MAX_DATAFRAMES) : (i += 1) {
-            if (self.frames[i] == null) {
-                self.frames[i] = df;
-                self.next_id = i + 1;
+        const max_search: u32 = @min(@as(u32, @intCast(self.frames.items.len)), MAX_DATAFRAMES);
+        while (i < max_search) : (i += 1) {
+            if (self.frames.items[i] == null) {
+                self.frames.items[i] = df;
                 return @intCast(i);
             }
         }
 
-        std.debug.assert(i == MAX_DATAFRAMES); // Post-condition: Loop exhausted all slots
-        return error.TooManyDataFrames;
+        // No empty slots, append new one
+        if (self.frames.items.len >= MAX_DATAFRAMES) {
+            return error.TooManyDataFrames;
+        }
+
+        try self.frames.append(self.allocator, df);
+        const handle: i32 = @intCast(self.frames.items.len - 1);
+
+        if (builtin.mode == .Debug) {
+            std.debug.assert(handle >= 0);
+            std.debug.assert(handle < MAX_DATAFRAMES);
+        }
+
+        return handle;
     }
 
-    fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
+    inline fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
         std.debug.assert(handle >= 0); // Pre-condition: Non-negative handle
-        std.debug.assert(handle < MAX_DATAFRAMES); // Pre-condition: Within bounds
 
         const idx: u32 = @intCast(handle);
-        const result = self.frames[idx];
+        if (idx >= self.frames.items.len) {
+            return null;
+        }
 
-        std.debug.assert(result == null or @intFromPtr(result.?) != 0); // Post-condition: Valid pointer if non-null
+        const result = self.frames.items[idx];
+
+        if (builtin.mode == .Debug) {
+            std.debug.assert(result == null or @intFromPtr(result.?) != 0); // Post-condition: Valid pointer if non-null
+        }
         return result;
     }
 
-    fn unregister(self: *DataFrameRegistry, handle: i32) void {
+    inline fn unregister(self: *DataFrameRegistry, handle: i32) void {
         std.debug.assert(handle >= 0); // Pre-condition: Non-negative handle
-        std.debug.assert(handle < MAX_DATAFRAMES); // Pre-condition: Within bounds
 
         const idx: u32 = @intCast(handle);
-        self.frames[idx] = null;
+        if (idx < self.frames.items.len) {
+            self.frames.items[idx] = null;
 
-        std.debug.assert(self.frames[idx] == null); // Post-condition: Slot is now null
+            if (builtin.mode == .Debug) {
+                std.debug.assert(self.frames.items[idx] == null); // Post-condition: Slot is now null
+            }
+        }
     }
 };
 
@@ -115,15 +159,18 @@ var registry: DataFrameRegistry = undefined;
 var registry_initialized = false;
 
 fn ensureRegistryInitialized() void {
-    const was_initialized = registry_initialized;
-
     if (!registry_initialized) {
-        registry = DataFrameRegistry.init(gpa.allocator());
+        registry = DataFrameRegistry.init(gpa.allocator()) catch blk: {
+            // If init fails, use a simpler fallback (shouldn't happen in practice)
+            break :blk DataFrameRegistry{
+                .frames = std.ArrayList(?*DataFrame).initCapacity(gpa.allocator(), 0) catch unreachable,
+                .allocator = gpa.allocator(),
+            };
+        };
         registry_initialized = true;
     }
 
     std.debug.assert(registry_initialized == true); // Post-condition: Always initialized after call
-    std.debug.assert(!was_initialized or registry.next_id >= 0); // Invariant: If already initialized, registry valid
 }
 
 fn getAllocator() std.mem.Allocator {
@@ -170,13 +217,13 @@ export fn rozes_parseCSV(
     };
 
     df_ptr.* = parser.toDataFrame() catch |err| {
-        // Log error context with row/column information
+        // Log error context with row/column information (debug only)
         const field_preview = if (parser.current_field.items.len > 0)
             parser.current_field.items[0..@min(50, parser.current_field.items.len)]
         else
             "";
 
-        std.log.err("CSV parsing failed: {} at row {} col {} - field preview: '{s}'", .{
+        logError("CSV parsing failed: {} at row {} col {} - field preview: '{s}'", .{
             err,
             parser.current_row_index,
             parser.current_col_index,
@@ -413,49 +460,8 @@ export fn rozes_getColumnBool(
     return @intFromEnum(ErrorCode.Success);
 }
 
-/// Get String column data
-/// Returns array of string pointers and lengths
-/// out_offsets_ptr: pointer to array of offsets (u32[])
-/// out_buffer_ptr: pointer to concatenated string buffer
-export fn rozes_getColumnString(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    out_offsets_ptr: *u32,
-    out_offsets_len: *u32,
-    out_buffer_ptr: *u32,
-    out_buffer_len: *u32,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-    std.debug.assert(@intFromPtr(out_offsets_ptr) != 0); // Non-null
-    std.debug.assert(@intFromPtr(out_offsets_len) != 0); // Non-null
-    std.debug.assert(@intFromPtr(out_buffer_ptr) != 0); // Non-null
-    std.debug.assert(@intFromPtr(out_buffer_len) != 0); // Non-null
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const col_name = col_name_ptr[0..col_name_len];
-    const series = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    // String columns are stored as [][]const u8
-    const strings = switch (series.data) {
-        .String => |s| s[0..series.length],
-        else => return @intFromEnum(ErrorCode.TypeMismatch),
-    };
-
-    // For MVP, we need to return the string array structure
-    // This is complex - for now, return TypeMismatch
-    // TODO: Implement proper string column export in 0.2.0
-    _ = strings; // Only discard strings since it's not used in assertions
-
-    std.debug.assert(false); // Not implemented yet
-    return @intFromEnum(ErrorCode.TypeMismatch);
-}
+// NOTE: String column export deferred to 0.2.0
+// Browser tests use Int64/Float64/Bool columns only for MVP
 
 // ============================================================================
 // Helper Functions
@@ -465,33 +471,55 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
     std.debug.assert(json.len > 0);
     std.debug.assert(json.len < 10_000); // Reasonable limit
 
-    const allocator = getAllocator();
-
-    // Define the JSON structure we expect
-    const ParsedOptions = struct {
-        delimiter: ?[]const u8 = null,
-        has_headers: ?bool = null,
-        skip_blank_lines: ?bool = null,
-        trim_whitespace: ?bool = null,
-    };
-
-    const parsed = try std.json.parseFromSlice(
-        ParsedOptions,
-        allocator,
-        json,
-        .{},
-    );
-    defer parsed.deinit();
-
     var opts = CSVOptions{};
 
-    // Apply parsed values if present
-    if (parsed.value.has_headers) |v| opts.has_headers = v;
-    if (parsed.value.skip_blank_lines) |v| opts.skip_blank_lines = v;
-    if (parsed.value.trim_whitespace) |v| opts.trim_whitespace = v;
-    if (parsed.value.delimiter) |d| {
-        if (d.len == 1) {
-            opts.delimiter = d[0];
+    // Simple manual JSON parser for CSV options only
+    // This saves ~2-3 KB by not pulling in std.json
+
+    // Check for "has_headers":true or "has_headers":false
+    if (std.mem.indexOf(u8, json, "\"has_headers\"") != null) {
+        if (std.mem.indexOf(u8, json, "\"has_headers\":true") != null or
+            std.mem.indexOf(u8, json, "\"has_headers\": true") != null) {
+            opts.has_headers = true;
+        } else if (std.mem.indexOf(u8, json, "\"has_headers\":false") != null or
+                   std.mem.indexOf(u8, json, "\"has_headers\": false") != null) {
+            opts.has_headers = false;
+        }
+    }
+
+    // Check for "skip_blank_lines":true or "skip_blank_lines":false
+    if (std.mem.indexOf(u8, json, "\"skip_blank_lines\"") != null) {
+        if (std.mem.indexOf(u8, json, "\"skip_blank_lines\":true") != null or
+            std.mem.indexOf(u8, json, "\"skip_blank_lines\": true") != null) {
+            opts.skip_blank_lines = true;
+        } else if (std.mem.indexOf(u8, json, "\"skip_blank_lines\":false") != null or
+                   std.mem.indexOf(u8, json, "\"skip_blank_lines\": false") != null) {
+            opts.skip_blank_lines = false;
+        }
+    }
+
+    // Check for "trim_whitespace":true or "trim_whitespace":false
+    if (std.mem.indexOf(u8, json, "\"trim_whitespace\"") != null) {
+        if (std.mem.indexOf(u8, json, "\"trim_whitespace\":true") != null or
+            std.mem.indexOf(u8, json, "\"trim_whitespace\": true") != null) {
+            opts.trim_whitespace = true;
+        } else if (std.mem.indexOf(u8, json, "\"trim_whitespace\":false") != null or
+                   std.mem.indexOf(u8, json, "\"trim_whitespace\": false") != null) {
+            opts.trim_whitespace = false;
+        }
+    }
+
+    // Check for "delimiter":"," or "delimiter":"\t"
+    if (std.mem.indexOf(u8, json, "\"delimiter\"") != null) {
+        if (std.mem.indexOf(u8, json, "\"delimiter\":\",\"") != null or
+            std.mem.indexOf(u8, json, "\"delimiter\": \",\"") != null) {
+            opts.delimiter = ',';
+        } else if (std.mem.indexOf(u8, json, "\"delimiter\":\"\\t\"") != null or
+                   std.mem.indexOf(u8, json, "\"delimiter\": \"\\t\"") != null) {
+            opts.delimiter = '\t';
+        } else if (std.mem.indexOf(u8, json, "\"delimiter\":\";\"") != null or
+                   std.mem.indexOf(u8, json, "\"delimiter\": \";\"") != null) {
+            opts.delimiter = ';';
         }
     }
 

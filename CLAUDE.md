@@ -724,3 +724,4 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 
 **Last Updated**: 2025-10-27
 **Next Review**: When Milestone 0.1.0 is complete (see docs/TODO.md)
+- all new docs should be written in /docs

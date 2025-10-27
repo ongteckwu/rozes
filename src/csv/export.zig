@@ -164,8 +164,9 @@ fn writeValue(
             try writeField(writer, bool_str, opts);
         },
         .String => {
-            // String support in 0.2.0
-            try writer.writeAll("");
+            const str_col = col.asStringColumn() orelse return error.TypeMismatch;
+            const str = str_col.get(row_idx);
+            try writeField(writer, str, opts);
         },
         .Null => {
             // Empty field for null

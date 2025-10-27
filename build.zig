@@ -25,27 +25,84 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_tests.step);
 
+    // Conformance tests (reads files from testdata/)
+    const conformance_module = b.createModule(.{
+        .root_source_file = b.path("src/test/conformance_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // Add rozes module as dependency so we can import DataFrame, CSVParser
+    conformance_module.addImport("rozes", rozes_mod);
+
+    const conformance = b.addExecutable(.{
+        .name = "conformance-runner",
+        .root_module = conformance_module,
+    });
+
+    const run_conformance = b.addRunArtifact(conformance);
+    const conformance_step = b.step("conformance", "Run RFC 4180 conformance tests from testdata/");
+    conformance_step.dependOn(&run_conformance.step);
+
     // Wasm build for browser
-    const wasm = b.addExecutable(.{
+    // Using wasi instead of freestanding to get POSIX-like APIs (needed for ArenaAllocator)
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+    });
+
+    // Development build: Debug mode, keep all assertions and logging
+    const wasm_dev = b.addExecutable(.{
+        .name = "rozes-dev",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .Debug,
+        }),
+    });
+    wasm_dev.entry = .disabled;
+    wasm_dev.rdynamic = true;
+    wasm_dev.export_memory = true;
+    wasm_dev.import_memory = false;
+
+    const wasm_dev_install = b.addInstallArtifact(wasm_dev, .{});
+    const wasm_dev_step = b.step("wasm-dev", "Build WebAssembly module (development)");
+    wasm_dev_step.dependOn(&wasm_dev_install.step);
+
+    // Production build: ReleaseSmall, with wasm-opt optimization
+    const wasm_prod = b.addExecutable(.{
         .name = "rozes",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/rozes.zig"),
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .wasm32,
-                .os_tag = .freestanding,
-            }),
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
             .optimize = .ReleaseSmall,
         }),
     });
-    wasm.entry = .disabled;
-    wasm.rdynamic = true;
+    wasm_prod.entry = .disabled;
+    wasm_prod.rdynamic = true;
+    wasm_prod.export_memory = true;
+    wasm_prod.import_memory = false;
 
-    const wasm_install = b.addInstallArtifact(wasm, .{});
-    const wasm_step = b.step("wasm", "Build WebAssembly module");
-    wasm_step.dependOn(&wasm_install.step);
+    const wasm_prod_install = b.addInstallArtifact(wasm_prod, .{});
 
-    // Install step
-    b.installArtifact(wasm);
+    // Run wasm-opt for additional size optimization
+    const wasm_opt = b.addSystemCommand(&[_][]const u8{
+        "wasm-opt",
+        "-Oz", // Maximum size optimization
+        "--enable-bulk-memory", // Required for Zig WASM output
+        "--strip-debug", // Remove debug sections
+        "--strip-producers", // Remove producers section
+        "--strip-dwarf", // Remove DWARF debug info
+        "--converge", // Run optimization passes until no more gains
+        "-o",
+    });
+    wasm_opt.addFileArg(b.path("zig-out/bin/rozes.wasm"));
+    wasm_opt.addFileArg(b.path("zig-out/bin/rozes.wasm"));
+    wasm_opt.step.dependOn(&wasm_prod_install.step);
 
-    _ = rozes_mod;
+    // Default "wasm" step builds production version
+    const wasm_step = b.step("wasm", "Build WebAssembly module (production, optimized)");
+    wasm_step.dependOn(&wasm_opt.step);
+
+    // Install step (for compatibility)
+    b.installArtifact(wasm_prod);
 }

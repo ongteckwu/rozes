@@ -11,8 +11,8 @@ const DataFrame = @import("../../../core/dataframe.zig").DataFrame;
 const CSVParser = @import("../../../csv/parser.zig").CSVParser;
 const ValueType = @import("../../../core/types.zig").ValueType;
 
-// Note: @embedFile paths are relative to the current file location
-// From src/test/unit/csv/ we need to go up 3 levels to reach testdata/
+// Note: @embedFile paths are resolved relative to the source file that contains them
+// From src/test/unit/csv/ we go up to src/, then ../testdata/
 
 test "RFC 4180: 01_simple.csv - basic CSV parsing" {
     const allocator = testing.allocator;

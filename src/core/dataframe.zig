@@ -209,7 +209,7 @@ pub const DataFrame = struct {
                 .Int64 => |slice| slice.len,
                 .Float64 => |slice| slice.len,
                 .Bool => |slice| slice.len,
-                .String => |slice| slice.len,
+                .String => |string_col| string_col.capacity,
                 .Null => 0,
             };
 
