@@ -3,11 +3,11 @@
 //! One-pass CSV parser with state machine for efficient parsing.
 //! Converts CSV text to columnar DataFrame.
 //!
-//! See RFC.md Section 5 for CSV parsing specification.
+//! See docs/RFC.md Section 5 for CSV parsing specification.
 //!
 //! Example:
 //! ```
-//! const csv = "name,age\nAlice,30\nBob,25\n";
+//! const csv = "age,score\n30,95.5\n25,87.3\n";
 //! var parser = try CSVParser.init(allocator, csv, .{});
 //! defer parser.deinit();
 //!
@@ -181,7 +181,8 @@ pub const CSVParser = struct {
             return .FieldComplete;
         } else if (char == '\n' or char == '\r') {
             self.skipLineEnding(char);
-            return .FieldComplete;
+            self.state = .EndOfRecord;
+            return .FieldComplete; // Return field, then nextField() will return null for end of row
         } else {
             try self.current_field.append(allocator, char);
             return .Continue;
@@ -212,7 +213,8 @@ pub const CSVParser = struct {
             return .FieldComplete;
         } else if (char == '\n' or char == '\r') {
             self.skipLineEnding(char);
-            return .FieldComplete;
+            self.state = .EndOfRecord;
+            return .FieldComplete; // Return field, then nextField() will return null for end of row
         } else {
             return error.InvalidQuoting;
         }
@@ -276,7 +278,7 @@ pub const CSVParser = struct {
 
             // Skip blank lines if option is set
             // Note: No need to free - arena will handle it
-            if (self.opts.skipBlankLines and row.len == 1 and row[0].len == 0) {
+            if (self.opts.skip_blank_lines and row.len == 1 and row[0].len == 0) {
                 row_count -= 1; // Don't count blank lines
                 continue;
             }
@@ -303,7 +305,7 @@ pub const CSVParser = struct {
         const allocator = self.arena.allocator();
 
         // Extract headers
-        const header_row: [][]const u8 = if (self.opts.hasHeaders) self.rows.items[0] else blk: {
+        const header_row: [][]const u8 = if (self.opts.has_headers) self.rows.items[0] else blk: {
             // Generate column names: col0, col1, col2, ...
             const col_count = self.rows.items[0].len;
             var headers = try allocator.alloc([]const u8, col_count);
@@ -313,7 +315,7 @@ pub const CSVParser = struct {
             break :blk headers;
         };
 
-        const data_start: usize = if (self.opts.hasHeaders) 1 else 0;
+        const data_start: usize = if (self.opts.has_headers) 1 else 0;
         const data_rows = self.rows.items[data_start..];
 
         // Infer column types
@@ -321,8 +323,8 @@ pub const CSVParser = struct {
         var column_types = try allocator.alloc(ValueType, col_count);
         defer allocator.free(column_types);
 
-        if (data_rows.len > 0 and self.opts.inferTypes) {
-            const preview_count = @min(self.opts.previewRows, @as(u32, @intCast(data_rows.len)));
+        if (data_rows.len > 0 and self.opts.infer_types) {
+            const preview_count = @min(self.opts.preview_rows, @as(u32, @intCast(data_rows.len)));
             for (0..col_count) |col_idx| {
                 column_types[col_idx] = try inferColumnType(data_rows[0..preview_count], col_idx);
             }
@@ -380,7 +382,9 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
 
     if (all_int) return .Int64;
     if (all_float) return .Float64;
-    return .String; // Default (not supported in MVP)
+
+    // MVP: String type not supported - this indicates type mismatch
+    return error.TypeMismatch;
 }
 
 /// Try to parse as Int64
@@ -473,12 +477,12 @@ test "CSVParser.nextField parses simple field" {
     const field1 = try parser.nextField();
     try testing.expect(field1 != null);
     try testing.expectEqualStrings("hello", field1.?);
-    allocator.free(field1.?);
+    // Don't free - parser's arena will handle cleanup
 
     const field2 = try parser.nextField();
     try testing.expect(field2 != null);
     try testing.expectEqualStrings("world", field2.?);
-    allocator.free(field2.?);
+    // Don't free - parser's arena will handle cleanup
 }
 
 test "CSVParser.nextField parses quoted field" {
@@ -493,12 +497,10 @@ test "CSVParser.nextField parses quoted field" {
     const field1 = try parser.nextField();
     try testing.expect(field1 != null);
     try testing.expectEqualStrings("hello, world", field1.?);
-    allocator.free(field1.?);
 
     const field2 = try parser.nextField();
     try testing.expect(field2 != null);
     try testing.expectEqualStrings("next", field2.?);
-    allocator.free(field2.?);
 }
 
 test "CSVParser.nextField handles escaped quotes" {
@@ -513,7 +515,6 @@ test "CSVParser.nextField handles escaped quotes" {
     const field = try parser.nextField();
     try testing.expect(field != null);
     try testing.expectEqualStrings("hello \"world\"", field.?);
-    allocator.free(field.?);
 }
 
 test "CSVParser.toDataFrame parses simple CSV" {
@@ -532,10 +533,10 @@ test "CSVParser.toDataFrame parses simple CSV" {
     try testing.expectEqual(@as(usize, 2), df.columnCount());
 
     const age_col = df.column("age").?;
-    try testing.expectEqual(ValueType.Int64, age_col.valueType);
+    try testing.expectEqual(ValueType.Int64, age_col.value_type);
 
     const score_col = df.column("score").?;
-    try testing.expectEqual(ValueType.Float64, score_col.valueType);
+    try testing.expectEqual(ValueType.Float64, score_col.value_type);
 
     const ages = age_col.asInt64().?;
     try testing.expectEqual(@as(i64, 30), ages[0]);
@@ -613,8 +614,8 @@ test "CSVParser.init skips UTF-8 BOM" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // CSV with BOM (0xEF 0xBB 0xBF) followed by content
-    const csv_with_bom = "\xEF\xBB\xBFname,age\nAlice,30\n";
+    // CSV with BOM (0xEF 0xBB 0xBF) followed by content (numeric only for MVP)
+    const csv_with_bom = "\xEF\xBB\xBFage,score\n30,95.5\n";
 
     var parser = try CSVParser.init(allocator, csv_with_bom, .{});
     defer parser.deinit();
@@ -626,16 +627,16 @@ test "CSVParser.init skips UTF-8 BOM" {
     defer df.deinit();
 
     // Should parse correctly, ignoring BOM
-    try testing.expectEqual(@as(u32, 1), df.rowCount);
-    try testing.expectEqualStrings("name", df.columnDescs[0].name);
-    try testing.expectEqualStrings("age", df.columnDescs[1].name);
+    try testing.expectEqual(@as(u32, 1), df.row_count);
+    try testing.expectEqualStrings("age", df.column_descs[0].name);
+    try testing.expectEqualStrings("score", df.column_descs[1].name);
 }
 
 test "CSVParser handles CSV without BOM" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const csv = "name,age\nAlice,30\n";
+    const csv = "age,score\n30,95.5\n";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
@@ -646,7 +647,7 @@ test "CSVParser handles CSV without BOM" {
     var df = try parser.toDataFrame();
     defer df.deinit();
 
-    try testing.expectEqual(@as(u32, 1), df.rowCount);
+    try testing.expectEqual(@as(u32, 1), df.row_count);
 }
 
 test "toDataFrame allows empty CSV with headers only" {
@@ -662,11 +663,11 @@ test "toDataFrame allows empty CSV with headers only" {
     defer df.deinit();
 
     // Should create DataFrame with 0 rows, 3 columns
-    try testing.expectEqual(@as(u32, 0), df.rowCount);
+    try testing.expectEqual(@as(u32, 0), df.row_count);
     try testing.expectEqual(@as(usize, 3), df.columns.len);
-    try testing.expectEqualStrings("name", df.columnDescs[0].name);
-    try testing.expectEqualStrings("age", df.columnDescs[1].name);
-    try testing.expectEqualStrings("score", df.columnDescs[2].name);
+    try testing.expectEqualStrings("name", df.column_descs[0].name);
+    try testing.expectEqualStrings("age", df.column_descs[1].name);
+    try testing.expectEqualStrings("score", df.column_descs[2].name);
 }
 
 test "toDataFrame handles empty DataFrame operations" {
@@ -690,7 +691,7 @@ test "skipLineEnding handles CRLF correctly" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const csv = "name,age\r\nAlice,30\r\nBob,25\r\n";
+    const csv = "age,score\r\n30,95.5\r\n25,87.3\r\n";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
@@ -698,14 +699,14 @@ test "skipLineEnding handles CRLF correctly" {
     var df = try parser.toDataFrame();
     defer df.deinit();
 
-    try testing.expectEqual(@as(u32, 2), df.rowCount);
+    try testing.expectEqual(@as(u32, 2), df.row_count);
 }
 
 test "skipLineEnding handles LF only" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const csv = "name,age\nAlice,30\nBob,25\n";
+    const csv = "age,score\n30,95.5\n25,87.3\n";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
@@ -713,14 +714,14 @@ test "skipLineEnding handles LF only" {
     var df = try parser.toDataFrame();
     defer df.deinit();
 
-    try testing.expectEqual(@as(u32, 2), df.rowCount);
+    try testing.expectEqual(@as(u32, 2), df.row_count);
 }
 
 test "skipLineEnding handles CR only (old Mac format)" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const csv = "name,age\rAlice,30\rBob,25\r";
+    const csv = "age,score\r30,95.5\r25,87.3\r";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
@@ -728,7 +729,7 @@ test "skipLineEnding handles CR only (old Mac format)" {
     var df = try parser.toDataFrame();
     defer df.deinit();
 
-    try testing.expectEqual(@as(u32, 2), df.rowCount);
+    try testing.expectEqual(@as(u32, 2), df.row_count);
 }
 
 test "fillDataFrame fails on invalid Int64 instead of defaulting to 0" {

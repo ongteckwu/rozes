@@ -1,6 +1,6 @@
 ---
 name: code-review-dataframe
-description: Review Zig code for Tiger Style compliance - enforces safety (2+ assertions, bounded loops, u32 not usize), 70-line function limit, ArenaAllocator usage, performance patterns, and Zig best practices from CLAUDE.md and RFC.md
+description: Review Zig code for Tiger Style compliance - enforces safety (2+ assertions, bounded loops, u32 not usize), 70-line function limit, ArenaAllocator usage, performance patterns, and Zig best practices from CLAUDE.md and docs/RFC.md
 color: blue
 ---
 
@@ -174,7 +174,7 @@ For each function:
 **Step 4: Project Alignment**
 
 1. Ensure consistency with existing codebase patterns
-2. Check alignment with RFC.md requirements
+2. Check alignment with docs/RFC.md requirements
 3. Verify test coverage approach
 
 **Step 5: Data Processing Reality Check**
@@ -316,9 +316,9 @@ When code meets both Tiger Style AND data processing standards, acknowledge what
 
 ## References
 
-- RFC.md - DataFrame library specification and requirements
+- docs/RFC.md - DataFrame library specification and requirements
 - CLAUDE.md - Project coding standards
-- TIGER_STYLE_APPLICATION.md - Tiger Style in practice
+- docs/TIGER_STYLE_APPLICATION.md - Tiger Style in practice
 - https://ziglang.org/documentation/master/ - Zig language reference
 - https://www.rfc-editor.org/rfc/rfc4180 - CSV specification
 

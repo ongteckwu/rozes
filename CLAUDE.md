@@ -24,21 +24,22 @@ Rozes is a DataFrame library written in Zig that provides:
 
 ### Core Documentation
 
-1. **[RFC.md](./RFC.md)** - Complete specification (RFC format)
-2. **[TODO.md](./TODO.md)** - Detailed project roadmap and task tracking
-3. **[CLAUDE.md](./CLAUDE.md)** - This file: Project guidelines, testing, and patterns
-4. **[README.md](./README.md)** - Getting started (to be created)
+1. **[README.md](./README.md)** - Getting started guide
+2. **[CLAUDE.md](./CLAUDE.md)** - This file: Project guidelines, testing, and patterns
+3. **[docs/RFC.md](./docs/RFC.md)** - Complete specification (RFC format)
+4. **[docs/TODO.md](./docs/TODO.md)** - Detailed project roadmap and task tracking
+5. **[docs/TIGER_STYLE_APPLICATION.md](./docs/TIGER_STYLE_APPLICATION.md)** - Tiger Style methodology applied to Rozes
 
 ### Implementation Guides
 
 - **[src/CLAUDE.md](./src/CLAUDE.md)** - Source code organization and implementation patterns
-- **ARCHITECTURE.md** (to be created) - System design and module structure
-- **CONTRIBUTING.md** (to be created) - Development workflow and PR process
+- **docs/ARCHITECTURE.md** (to be created) - System design and module structure
+- **docs/CONTRIBUTING.md** (to be created) - Development workflow and PR process
 
 ### Quality Assurance
 
-- **BENCHMARKING.md** (to be created) - Performance metrics and optimization
-- **TESTING_STRATEGY.md** (to be created) - Unit, integration, and benchmark testing
+- **docs/BENCHMARKING.md** (to be created) - Performance metrics and optimization
+- **docs/TESTING_STRATEGY.md** (to be created) - Unit, integration, and benchmark testing
 
 ---
 
@@ -59,7 +60,7 @@ Rozes is a DataFrame library written in Zig that provides:
 - Browser testing
 
 ### For Development
-👉 See **[TODO.md](./TODO.md)** for:
+👉 See **[docs/TODO.md](./docs/TODO.md)** for:
 - Current milestone tasks
 - Phase breakdown
 - Acceptance criteria
@@ -576,8 +577,8 @@ open http://localhost:8080/test/browser/
 
 ### Before Writing Code
 
-1. Read the relevant section in [RFC.md](./RFC.md)
-2. Check [TODO.md](./TODO.md) for current tasks
+1. Read the relevant section in [docs/RFC.md](./docs/RFC.md)
+2. Check [docs/TODO.md](./docs/TODO.md) for current tasks
 3. Review [src/CLAUDE.md](./src/CLAUDE.md) for implementation patterns
 4. Check performance targets for the feature
 
@@ -598,7 +599,7 @@ open http://localhost:8080/test/browser/
 4. Test in browser environment (if JS-facing changes)
 5. Benchmark against performance targets
 6. Update documentation if API changed
-7. Update TODO.md to check off completed tasks
+7. Update docs/TODO.md to check off completed tasks
 
 ### Testing Requirements
 
@@ -717,9 +718,9 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 
 - **Issues**: [GitHub Issues](https://github.com/yourusername/rozes/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yourusername/rozes/discussions)
-- **PRs**: Follow [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **PRs**: Follow [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md)
 
 ---
 
 **Last Updated**: 2025-10-27
-**Next Review**: When Milestone 0.1.0 is complete (see TODO.md)
+**Next Review**: When Milestone 0.1.0 is complete (see docs/TODO.md)

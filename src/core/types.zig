@@ -7,7 +7,7 @@
 //! - ParseMode: Error handling strategies
 //! - ParseError: Error information
 //!
-//! See RFC.md Section 3 for detailed type specifications.
+//! See docs/RFC.md Section 3 for detailed type specifications.
 
 const std = @import("std");
 

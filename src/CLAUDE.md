@@ -59,7 +59,7 @@ src/
 //! Core type definitions for Rozes DataFrame library.
 //!
 //! This module contains all fundamental types used across the codebase.
-//! See RFC.md Section 4.1 for type specifications.
+//! See docs/RFC.md Section 4.1 for type specifications.
 
 const std = @import("std");
 
@@ -960,7 +960,7 @@ const MemoryTracker = struct {
 4. **Memory Leak Tests** - 1000 iterations of create/free cycles
 5. **Conformance Tests** - RFC 4180 compliance using testdata files
 
-**Test Location**: See `/CLAUDE.md` for test organization - all tests go in `src/test/`, NOT in source files
+**Test Location**: See `../CLAUDE.md` for test organization - all tests go in `src/test/`, NOT in source files
 
 ### Unit Test Template
 
@@ -1415,4 +1415,4 @@ if (has_decimals) {
 ---
 
 **Last Updated**: 2025-10-27
-**Related**: See `/CLAUDE.md` for project-wide guidelines
+**Related**: See `../CLAUDE.md` for project-wide guidelines and `../docs/` for full documentation

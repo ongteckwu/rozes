@@ -3,7 +3,7 @@
 //! A Series represents a single column of homogeneous data.
 //! Data is stored in a columnar layout for efficient access.
 //!
-//! See RFC.md Section 3.2 for Series specification.
+//! See docs/RFC.md Section 3.2 for Series specification.
 //!
 //! Example:
 //! ```
@@ -321,7 +321,7 @@ test "Series.init creates empty series" {
     defer series.deinit(allocator);
 
     try testing.expectEqualStrings("test", series.name);
-    try testing.expectEqual(ValueType.Int64, series.valueType);
+    try testing.expectEqual(ValueType.Int64, series.value_type);
     try testing.expectEqual(@as(u32, 0), series.len());
     try testing.expect(series.isEmpty());
 }

@@ -6,7 +6,7 @@
 //! Memory is managed using an Arena allocator for the DataFrame lifecycle.
 //! When the DataFrame is freed, all associated memory is released at once.
 //!
-//! See RFC.md Section 3.3 for DataFrame specification.
+//! See docs/RFC.md Section 3.3 for DataFrame specification.
 //!
 //! Example:
 //! ```
@@ -74,43 +74,43 @@ pub const DataFrame = struct {
         for (columnDescs, 0..) |desc, i| {
             // Duplicate column name in arena
             const name = try arena_allocator.dupe(u8, desc.name);
-            descs[i] = ColumnDesc.init(name, desc.valueType, @intCast(i));
+            descs[i] = ColumnDesc.init(name, desc.value_type, @intCast(i));
         }
 
         // Allocate columns
         const cols = try arena_allocator.alloc(Series, columnDescs.len);
         for (columnDescs, 0..) |desc, i| {
             const name = try arena_allocator.dupe(u8, desc.name);
-            cols[i] = try Series.init(arena_allocator, name, desc.valueType, capacity);
+            cols[i] = try Series.init(arena_allocator, name, desc.value_type, capacity);
         }
 
         return DataFrame{
             .arena = arena,
-            .columnDescs = descs,
+            .column_descs = descs,
             .columns = cols,
-            .rowCount = 0,
+            .row_count = 0,
         };
     }
 
     /// Frees all DataFrame memory (via arena)
     pub fn deinit(self: *DataFrame) void {
-        std.debug.assert(self.rowCount <= MAX_ROWS); // Invariant check
+        std.debug.assert(self.row_count <= MAX_ROWS); // Invariant check
         std.debug.assert(self.columns.len <= MAX_COLS); // Invariant check
 
         // Arena deinit frees everything at once
         self.arena.deinit();
 
         // Clear pointers (safety)
-        self.columnDescs = &[_]ColumnDesc{};
+        self.column_descs = &[_]ColumnDesc{};
         self.columns = &[_]Series{};
-        self.rowCount = 0;
+        self.row_count = 0;
     }
 
     /// Returns the number of rows
     pub fn len(self: *const DataFrame) u32 {
-        std.debug.assert(self.rowCount <= MAX_ROWS); // Invariant
+        std.debug.assert(self.row_count <= MAX_ROWS); // Invariant
 
-        return self.rowCount;
+        return self.row_count;
     }
 
     /// Returns the number of columns
@@ -122,10 +122,10 @@ pub const DataFrame = struct {
 
     /// Returns true if DataFrame is empty (no rows)
     pub fn isEmpty(self: *const DataFrame) bool {
-        std.debug.assert(self.rowCount <= MAX_ROWS); // Invariant check
+        std.debug.assert(self.row_count <= MAX_ROWS); // Invariant check
 
-        const result = self.rowCount == 0;
-        std.debug.assert(result == (self.rowCount == 0)); // Post-condition
+        const result = self.row_count == 0;
+        std.debug.assert(result == (self.row_count == 0)); // Post-condition
         return result;
     }
 
@@ -150,11 +150,11 @@ pub const DataFrame = struct {
     /// Finds column index by name
     pub fn columnIndex(self: *const DataFrame, name: []const u8) ?usize {
         std.debug.assert(name.len > 0); // Name required
-        std.debug.assert(self.columnDescs.len <= MAX_COLS); // Invariant
+        std.debug.assert(self.column_descs.len <= MAX_COLS); // Invariant
 
         var i: u32 = 0;
-        while (i < MAX_COLS and i < self.columnDescs.len) : (i += 1) {
-            if (std.mem.eql(u8, self.columnDescs[i].name, name)) {
+        while (i < MAX_COLS and i < self.column_descs.len) : (i += 1) {
+            if (std.mem.eql(u8, self.column_descs[i].name, name)) {
                 return i;
             }
         }
@@ -188,11 +188,11 @@ pub const DataFrame = struct {
         var names = try allocator.alloc([]const u8, self.columns.len);
 
         var i: u32 = 0;
-        while (i < MAX_COLS and i < self.columnDescs.len) : (i += 1) {
-            names[i] = self.columnDescs[i].name;
+        while (i < MAX_COLS and i < self.column_descs.len) : (i += 1) {
+            names[i] = self.column_descs[i].name;
         }
 
-        std.debug.assert(i == self.columnDescs.len); // Processed all columns
+        std.debug.assert(i == self.column_descs.len); // Processed all columns
         std.debug.assert(names.len == self.columns.len); // Post-condition
         return names;
     }
@@ -218,14 +218,14 @@ pub const DataFrame = struct {
             col.length = count;
         }
 
-        self.rowCount = count;
+        self.row_count = count;
     }
 
     /// Creates a row reference for accessing row data
     pub fn row(self: *const DataFrame, idx: u32) !RowRef {
-        std.debug.assert(self.rowCount <= MAX_ROWS); // Invariant
+        std.debug.assert(self.row_count <= MAX_ROWS); // Invariant
 
-        if (idx >= self.rowCount) return error.IndexOutOfBounds;
+        if (idx >= self.row_count) return error.IndexOutOfBounds;
 
         return RowRef{
             .dataframe = self,
@@ -235,12 +235,71 @@ pub const DataFrame = struct {
 
     /// Prints DataFrame info (for debugging)
     pub fn print(self: *const DataFrame, writer: anytype) !void {
-        try writer.print("DataFrame({} rows × {} cols)\n", .{ self.rowCount, self.columns.len });
+        try writer.print("DataFrame({} rows × {} cols)\n", .{ self.row_count, self.columns.len });
         try writer.print("Columns:\n", .{});
 
-        for (self.columnDescs) |desc| {
-            try writer.print("  - {s}: {s}\n", .{ desc.name, @tagName(desc.valueType) });
+        for (self.column_descs) |desc| {
+            try writer.print("  - {s}: {s}\n", .{ desc.name, @tagName(desc.value_type) });
         }
+    }
+
+    /// Exports DataFrame to CSV format
+    ///
+    /// Args:
+    ///   - allocator: Memory allocator for output buffer
+    ///   - opts: CSV formatting options
+    ///
+    /// Returns: Allocated CSV string (caller must free)
+    pub fn toCSV(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        opts: types.CSVOptions,
+    ) ![]u8 {
+        std.debug.assert(self.columns.len > 0); // Need columns
+        std.debug.assert(self.columns.len <= MAX_COLS); // Within limits
+
+        const export_mod = @import("../csv/export.zig");
+        return export_mod.toCSV(self, allocator, opts);
+    }
+
+    /// Selects a subset of columns
+    ///
+    /// Returns: New DataFrame with selected columns
+    pub fn select(self: *const DataFrame, column_names: []const []const u8) !DataFrame {
+        const ops = @import("operations.zig");
+        return ops.select(self, column_names);
+    }
+
+    /// Drops specified columns
+    ///
+    /// Returns: New DataFrame without dropped columns
+    pub fn drop(self: *const DataFrame, column_names: []const []const u8) !DataFrame {
+        const ops = @import("operations.zig");
+        return ops.drop(self, column_names);
+    }
+
+    /// Filters rows based on a predicate
+    ///
+    /// Returns: New DataFrame with filtered rows
+    pub fn filter(self: *const DataFrame, predicate: anytype) !DataFrame {
+        const ops = @import("operations.zig");
+        return ops.filter(self, predicate);
+    }
+
+    /// Computes sum of a numeric column
+    ///
+    /// Returns: Sum as f64, or null if empty
+    pub fn sum(self: *const DataFrame, column_name: []const u8) !?f64 {
+        const ops = @import("operations.zig");
+        return ops.sum(self, column_name);
+    }
+
+    /// Computes mean of a numeric column
+    ///
+    /// Returns: Mean as f64, or null if empty
+    pub fn mean(self: *const DataFrame, column_name: []const u8) !?f64 {
+        const ops = @import("operations.zig");
+        return ops.mean(self, column_name);
     }
 };
 
@@ -252,7 +311,7 @@ pub const RowRef = struct {
     /// Gets value from column as Int64
     pub fn getInt64(self: RowRef, colName: []const u8) ?i64 {
         std.debug.assert(colName.len > 0); // Name required
-        std.debug.assert(self.rowIndex < self.dataframe.rowCount); // Valid row index
+        std.debug.assert(self.rowIndex < self.dataframe.row_count); // Valid row index
 
         const col = self.dataframe.column(colName) orelse return null;
         const data = col.asInt64() orelse return null;
@@ -264,7 +323,7 @@ pub const RowRef = struct {
     /// Gets value from column as Float64
     pub fn getFloat64(self: RowRef, colName: []const u8) ?f64 {
         std.debug.assert(colName.len > 0); // Name required
-        std.debug.assert(self.rowIndex < self.dataframe.rowCount); // Valid row index
+        std.debug.assert(self.rowIndex < self.dataframe.row_count); // Valid row index
 
         const col = self.dataframe.column(colName) orelse return null;
         const data = col.asFloat64() orelse return null;
@@ -276,7 +335,7 @@ pub const RowRef = struct {
     /// Gets value from column as Bool
     pub fn getBool(self: RowRef, colName: []const u8) ?bool {
         std.debug.assert(colName.len > 0); // Name required
-        std.debug.assert(self.rowIndex < self.dataframe.rowCount); // Valid row index
+        std.debug.assert(self.rowIndex < self.dataframe.row_count); // Valid row index
 
         const col = self.dataframe.column(colName) orelse return null;
         const data = col.asBool() orelse return null;
@@ -319,11 +378,11 @@ test "DataFrame.column finds column by name" {
 
     const age_col = df.column("age").?;
     try testing.expectEqualStrings("age", age_col.name);
-    try testing.expectEqual(ValueType.Int64, age_col.valueType);
+    try testing.expectEqual(ValueType.Int64, age_col.value_type);
 
     const score_col = df.column("score").?;
     try testing.expectEqualStrings("score", score_col.name);
-    try testing.expectEqual(ValueType.Float64, score_col.valueType);
+    try testing.expectEqual(ValueType.Float64, score_col.value_type);
 }
 
 test "DataFrame.column returns null for non-existent column" {
@@ -443,4 +502,39 @@ test "DataFrame.row returns error for out of bounds" {
 
     try testing.expectError(error.IndexOutOfBounds, df.row(5));
     try testing.expectError(error.IndexOutOfBounds, df.row(100));
+}
+
+test "DataFrame.toCSV exports DataFrame correctly" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("age", .Int64, 0),
+        ColumnDesc.init("score", .Float64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 10);
+    defer df.deinit();
+
+    // Set data
+    const age_col = df.columnMut("age").?;
+    const ages = age_col.asInt64Buffer().?;
+    ages[0] = 30;
+    ages[1] = 25;
+
+    const score_col = df.columnMut("score").?;
+    const scores = score_col.asFloat64Buffer().?;
+    scores[0] = 95.5;
+    scores[1] = 87.3;
+
+    try df.setRowCount(2);
+
+    // Export to CSV
+    const csv = try df.toCSV(allocator, .{});
+    defer allocator.free(csv);
+
+    // Verify output
+    try testing.expect(std.mem.indexOf(u8, csv, "age,score") != null);
+    try testing.expect(std.mem.indexOf(u8, csv, "30,") != null);
+    try testing.expect(std.mem.indexOf(u8, csv, "25,") != null);
 }

@@ -339,7 +339,7 @@ When adding tests:
 - [RFC 4180 Specification](https://www.rfc-editor.org/rfc/rfc4180)
 - [CSV Test Spectrum](https://github.com/maxogden/csv-spectrum)
 - [Papa Parse Tests](https://github.com/mholt/PapaParse/tree/master/tests)
-- [Rozes RFC](../../RFC.md)
+- [Rozes RFC](../../../docs/RFC.md)
 
 ---
 
