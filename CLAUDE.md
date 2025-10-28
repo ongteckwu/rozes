@@ -727,3 +727,4 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 - all new docs should be written in /docs
 - dont update RFC.md
 - all document creation should be in docs/
+- whenever a todo is done, update @docs/TODO.md

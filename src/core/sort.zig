@@ -126,7 +126,6 @@ pub fn sortBy(
             }
         }
         if (!col_found) {
-            std.log.err("Column not found: {s}", .{specs[spec_idx].column});
             return error.ColumnNotFound;
         }
         sort_columns[spec_idx] = col_ptr;
@@ -156,6 +155,37 @@ const SortContext = struct {
 };
 
 /// Comparison function for sorting
+/// Compares two Float64 values with IEEE 754 NaN handling
+///
+/// NaN values are treated as greater than all other values and sort to the end.
+/// When both values are NaN, original order is preserved for stable sort.
+fn compareFloat64(col: *Series, idx_a: u32, idx_b: u32) std.math.Order {
+    std.debug.assert(idx_a < std.math.maxInt(u32)); // Pre-condition #1: Valid index
+    std.debug.assert(idx_b < std.math.maxInt(u32)); // Pre-condition #2: Valid index
+
+    const data = col.asFloat64Buffer() orelse unreachable;
+    const a = data[idx_a];
+    const b = data[idx_b];
+
+    // IEEE 754 NaN handling: NaN is unordered, sorts to end
+    const a_is_nan = std.math.isNan(a);
+    const b_is_nan = std.math.isNan(b);
+
+    if (a_is_nan and b_is_nan) {
+        // Both NaN: preserve original order (stable sort)
+        return std.math.order(idx_a, idx_b);
+    } else if (a_is_nan) {
+        // a is NaN, b is not: NaN sorts to end
+        return .gt;
+    } else if (b_is_nan) {
+        // b is NaN, a is not: NaN sorts to end
+        return .lt;
+    } else {
+        // Neither is NaN: normal comparison
+        return std.math.order(a, b);
+    }
+}
+
 fn compareFn(context: SortContext, idx_a: u32, idx_b: u32) std.math.Order {
     std.debug.assert(idx_a < std.math.maxInt(u32)); // Pre-condition #1: Valid index
     std.debug.assert(idx_b < std.math.maxInt(u32)); // Pre-condition #2: Valid index
@@ -173,29 +203,7 @@ fn compareFn(context: SortContext, idx_a: u32, idx_b: u32) std.math.Order {
                 const b = data[idx_b];
                 break :blk std.math.order(a, b);
             },
-            .Float64 => blk: {
-                const data = col.asFloat64Buffer() orelse unreachable;
-                const a = data[idx_a];
-                const b = data[idx_b];
-
-                // IEEE 754 NaN handling: NaN is unordered, sorts to end
-                const a_is_nan = std.math.isNan(a);
-                const b_is_nan = std.math.isNan(b);
-
-                if (a_is_nan and b_is_nan) {
-                    // Both NaN: preserve original order (stable sort)
-                    break :blk std.math.order(idx_a, idx_b);
-                } else if (a_is_nan) {
-                    // a is NaN, b is not: NaN sorts to end
-                    break :blk .gt;
-                } else if (b_is_nan) {
-                    // b is NaN, a is not: NaN sorts to end
-                    break :blk .lt;
-                } else {
-                    // Neither is NaN: normal comparison
-                    break :blk std.math.order(a, b);
-                }
-            },
+            .Float64 => compareFloat64(col, idx_a, idx_b),
             .Bool => blk: {
                 const data = col.asBoolBuffer() orelse unreachable;
                 const a = data[idx_a];

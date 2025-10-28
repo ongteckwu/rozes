@@ -34,7 +34,7 @@ test "unique returns distinct Int64 values" {
     values[7] = 4;
     values[8] = 4;
     values[9] = 4;
-    df.row_count = 10;
+    try df.setRowCount(10);
 
     const unique_values = try df.unique(allocator, "values");
     defer {
@@ -62,7 +62,7 @@ test "unique returns distinct String values" {
     try col.appendString(df.arena.allocator(), "NYC");
     try col.appendString(df.arena.allocator(), "SF");
     try col.appendString(df.arena.allocator(), "LA");
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     const unique_values = try df.unique(allocator, "city");
     defer {
@@ -83,7 +83,7 @@ test "unique returns error for non-existent column" {
 
     var df = try DataFrame.create(allocator, &cols, 5);
     defer df.deinit();
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     try testing.expectError(error.ColumnNotFound, df.unique(allocator, "nonexistent"));
 }
@@ -104,7 +104,7 @@ test "unique handles Bool column (max 2 values)" {
     flags[2] = true;
     flags[3] = false;
     flags[4] = true;
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     const unique_values = try df.unique(allocator, "flag");
     defer {
@@ -146,7 +146,7 @@ test "dropDuplicates removes duplicate rows (all columns)" {
     ages[3] = 35;
     ages[4] = 25; // Same as row 1
 
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     var result = try df.dropDuplicates(allocator, null);
     defer result.deinit();
@@ -186,7 +186,7 @@ test "dropDuplicates with subset columns" {
     scores[2] = 92.0; // Different score for Alice
     scores[3] = 88.0; // Different score for Bob
 
-    df.row_count = 4;
+    try df.setRowCount(4);
 
     // Drop duplicates based on name only
     const subset = [_][]const u8{"name"};
@@ -222,7 +222,7 @@ test "dropDuplicates preserves order (keeps first occurrence)" {
     values[3] = 300;
     values[4] = 888; // Should be ignored
 
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     const subset = [_][]const u8{"id"};
     var result = try df.dropDuplicates(allocator, &subset);
@@ -259,7 +259,7 @@ test "rename changes column names" {
 
     var df = try DataFrame.create(allocator, &cols, 5);
     defer df.deinit();
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     var rename_map = std.StringHashMap([]const u8).init(allocator);
     defer rename_map.deinit();
@@ -288,7 +288,7 @@ test "rename preserves data" {
     ages[0] = 30;
     ages[1] = 25;
     ages[2] = 35;
-    df.row_count = 3;
+    try df.setRowCount(3);
 
     var rename_map = std.StringHashMap([]const u8).init(allocator);
     defer rename_map.deinit();
@@ -313,7 +313,15 @@ test "rename keeps unmapped columns unchanged" {
 
     var df = try DataFrame.create(allocator, &cols, 1);
     defer df.deinit();
-    df.row_count = 1;
+
+    // Initialize string column data
+    try df.columns[0].appendString(df.arena.allocator(), "Alice");
+
+    // Initialize int column data
+    const ages = df.columns[1].asInt64Buffer() orelse unreachable;
+    ages[0] = 30;
+
+    try df.setRowCount(1);
 
     var rename_map = std.StringHashMap([]const u8).init(allocator);
     defer rename_map.deinit();
@@ -345,7 +353,7 @@ test "head returns first n rows" {
     while (i < 10) : (i += 1) {
         ids[i] = @intCast(i + 1);
     }
-    df.row_count = 10;
+    try df.setRowCount(10);
 
     var result = try df.head(allocator, 3);
     defer result.deinit();
@@ -367,7 +375,7 @@ test "head returns all rows if n > row_count" {
 
     var df = try DataFrame.create(allocator, &cols, 5);
     defer df.deinit();
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     var result = try df.head(allocator, 100);
     defer result.deinit();
@@ -389,7 +397,7 @@ test "head works with String columns" {
     try col.appendString(df.arena.allocator(), "Alice");
     try col.appendString(df.arena.allocator(), "Bob");
     try col.appendString(df.arena.allocator(), "Charlie");
-    df.row_count = 3;
+    try df.setRowCount(3);
 
     var result = try df.head(allocator, 2);
     defer result.deinit();
@@ -420,7 +428,7 @@ test "tail returns last n rows" {
     while (i < 10) : (i += 1) {
         ids[i] = @intCast(i + 1);
     }
-    df.row_count = 10;
+    try df.setRowCount(10);
 
     var result = try df.tail(allocator, 3);
     defer result.deinit();
@@ -442,7 +450,7 @@ test "tail returns all rows if n > row_count" {
 
     var df = try DataFrame.create(allocator, &cols, 5);
     defer df.deinit();
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     var result = try df.tail(allocator, 100);
     defer result.deinit();
@@ -464,7 +472,7 @@ test "tail works with String columns" {
     try col.appendString(df.arena.allocator(), "Alice");
     try col.appendString(df.arena.allocator(), "Bob");
     try col.appendString(df.arena.allocator(), "Charlie");
-    df.row_count = 3;
+    try df.setRowCount(3);
 
     var result = try df.tail(allocator, 2);
     defer result.deinit();
@@ -497,7 +505,7 @@ test "describe returns statistical summary for Int64 column" {
     ages[2] = 40;
     ages[3] = 50;
     ages[4] = 60;
-    df.row_count = 5;
+    try df.setRowCount(5);
 
     var summary = try df.describe(allocator);
     defer summary.deinit();
@@ -527,7 +535,7 @@ test "describe returns statistical summary for Float64 column" {
     scores[0] = 85.5;
     scores[1] = 90.0;
     scores[2] = 95.5;
-    df.row_count = 3;
+    try df.setRowCount(3);
 
     var summary = try df.describe(allocator);
     defer summary.deinit();
@@ -559,7 +567,7 @@ test "describe handles non-numeric columns (returns count only)" {
     ages[0] = 30;
     ages[1] = 25;
 
-    df.row_count = 2;
+    try df.setRowCount(2);
 
     var summary = try df.describe(allocator);
     defer summary.deinit();
@@ -583,9 +591,9 @@ test "describe handles empty DataFrame" {
         ColumnDesc.init("value", .Int64, 0),
     };
 
-    var df = try DataFrame.create(allocator, &cols, 0);
+    var df = try DataFrame.create(allocator, &cols, 1);
     defer df.deinit();
-    df.row_count = 0;
+    try df.setRowCount(0);
 
     var summary = try df.describe(allocator);
     defer summary.deinit();

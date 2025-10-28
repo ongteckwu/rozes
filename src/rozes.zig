@@ -51,6 +51,9 @@ pub const operations = @import("core/operations.zig");
 pub const csv = @import("csv/parser.zig");
 pub const CSVParser = csv.CSVParser;
 
+// SIMD utilities
+pub const simd = @import("core/simd.zig");
+
 /// Library version
 pub const VERSION = "0.1.0-dev";
 
@@ -68,6 +71,7 @@ test {
     _ = @import("core/dataframe.zig");
     _ = @import("core/operations.zig");
     _ = @import("core/sort.zig");
+    _ = @import("core/simd.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
 

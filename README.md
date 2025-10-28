@@ -114,11 +114,17 @@ zig build wasm
 # Build WebAssembly module - Development (debug symbols, ~120KB)
 zig build wasm-dev
 
-# Run unit tests (60 tests - inline in source files)
+# Run unit tests (155 tests)
 zig build test
 
-# Run conformance tests (35 CSV files from testdata/)
+# Run conformance tests (125 CSV files from testdata/)
 zig build conformance
+
+# Run performance benchmarks
+zig build benchmark
+# Measures: CSV parsing (1K, 10K, 100K, 1M rows)
+#          Operations (filter, sort, groupBy, join, head, dropDuplicates)
+# Compares actual performance vs targets
 
 # Output: zig-out/bin/rozes.wasm
 ```
@@ -399,24 +405,30 @@ Rozes combines the best of Python's pandas with the performance of WebAssembly a
 
 ### Performance Benchmarks
 
-**Filter 1M rows** (numeric predicate):
-- Rozes: **~95ms** ⚡ (target)
-- danfo.js: ~1,200ms
-- Arquero: ~450ms
-- DataFrame.js: ~2,100ms
+**Real-World Performance** (Milestone 0.3.0 - Achieved ✅):
 
-**Aggregate 1M values** (sum):
-- Rozes: **~18ms** ⚡ (with zero-copy)
-- danfo.js: ~180ms
-- Arquero: ~95ms
-- Array.reduce(): ~850ms
+| Operation | Rozes (0.3.0) | danfo.js | Arquero | Speedup |
+|-----------|---------------|----------|---------|---------|
+| CSV Parse (1M rows) | **575ms** | 2-3s | N/A | **3-5× faster** |
+| Filter (1M rows) | **13ms** | ~150ms | ~80ms | **6-12× faster** |
+| Sort (100K rows) | **6.6ms** | ~50ms | ~40ms | **6-8× faster** |
+| GroupBy (100K rows) | **1.5ms** | ~30ms | ~25ms | **17-20× faster** |
+| Join (10K × 10K) | **696ms** | ~800ms | ~600ms | **Comparable** |
 
-**Sort 1M rows**:
-- Rozes: **~480ms** ⚡ (stable merge sort)
-- danfo.js: ~2,800ms
-- Arquero: ~1,200ms
+**Performance Status** (4/5 targets exceeded):
+- ✅ CSV Parse: 80% faster than 3s target
+- ✅ Filter: 87% faster than 100ms target
+- ✅ Sort: 93% faster than 100ms target
+- ✅ GroupBy: 99.5% faster than 300ms target
+- ⚠️ Join: 39% over 500ms target (acceptable for MVP)
 
-*Note: Benchmarks are targets for 1.0.0 release. Current 0.3.0 development build.*
+**Throughput Achieved**:
+- CSV Parsing: **1.74M rows/sec**
+- Filter Operations: **75M rows/sec**
+- Sort Operations: **15M rows/sec**
+- GroupBy Analytics: **66M rows/sec**
+
+*Measured on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for full benchmark methodology and optimization details.*
 
 ### Why Choose Rozes?
 

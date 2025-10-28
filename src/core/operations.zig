@@ -239,7 +239,7 @@ pub fn filter(
                     },
                     .Bool => {
                         const src_data = src_col.asBool().?;
-                        const dst_data = dst_col.asBool().?;
+                        const dst_data = dst_col.asBoolBuffer().?;
                         dst_data[dst_idx] = src_data[row_idx];
                     },
                     .String => {

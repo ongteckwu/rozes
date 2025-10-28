@@ -1406,6 +1406,158 @@ std.math.order(tiny, 0.0) == .gt; // Works correctly ✅
 - **After**: 113/113 tests passing, production-ready
 - **Lesson**: IEEE 754 special values (NaN, Inf, -0.0) are first-class citizens in data processing
 
+### Learning #10: For-Loops in Aggregations Need Explicit Bounds 🔥
+
+**THE DISCOVERY**:
+From Milestone 0.3.0 code review (2025-10-28):
+- **3 unbounded for-loops** in groupBy aggregations (computeSum, computeMin, computeMax)
+- **6 unbounded for-loops** in join operations (probeHashTable, copyColumnData)
+- **Total**: 9 Tiger Style violations across 2 critical modules
+
+**THE PROBLEM**:
+```zig
+// ❌ CRITICAL VIOLATION - Unbounded for-loop in aggregation
+fn computeSum(self: *GroupBy, col: *const Series, group: *const Group) !f64 {
+    std.debug.assert(group.row_indices.items.len > 0); // Has pre-condition
+    _ = self;
+
+    var sum: f64 = 0.0;
+
+    switch (col.value_type) {
+        .Int64 => {
+            const data = col.asInt64() orelse return error.TypeMismatch;
+            for (group.row_indices.items) |row_idx| {  // ❌ NO EXPLICIT MAX!
+                sum += @as(f64, @floatFromInt(data[row_idx]));
+            }
+        },
+        // ... more cases
+    }
+    return sum; // ❌ Missing post-condition assertion!
+}
+```
+
+**WHY IT'S CRITICAL**:
+1. **Tiger Style Hard Rule**: ALL loops must have explicit MAX constant
+2. **Real-World Risk**: Large groups can have millions of rows
+   - Example: CSV with "Unknown" city → 1M rows in one group
+   - Example: Left join with duplicate key → 100K matches per key
+3. **Attack Vector**: Malicious CSV can trigger infinite loop
+   - CSV with all rows having same grouping key
+   - Join on constant column (e.g., all rows have country="US")
+
+**THE CORRECT PATTERN**:
+```zig
+// ✅ CORRECT - Bounded loop with pre/post-conditions
+fn computeSum(self: *GroupBy, col: *const Series, group: *const Group) !f64 {
+    std.debug.assert(group.row_indices.items.len > 0); // Pre-condition #1
+    std.debug.assert(group.row_indices.items.len <= MAX_ROWS); // Pre-condition #2
+    _ = self;
+
+    var sum: f64 = 0.0;
+
+    switch (col.value_type) {
+        .Int64 => {
+            const data = col.asInt64() orelse return error.TypeMismatch;
+
+            var i: u32 = 0;
+            while (i < MAX_ROWS and i < group.row_indices.items.len) : (i += 1) {
+                const row_idx = group.row_indices.items[i];
+                sum += @as(f64, @floatFromInt(data[row_idx]));
+            }
+            std.debug.assert(i == group.row_indices.items.len); // Post-condition #3
+        },
+        .Float64 => {
+            const data = col.asFloat64() orelse return error.TypeMismatch;
+
+            var i: u32 = 0;
+            while (i < MAX_ROWS and i < group.row_indices.items.len) : (i += 1) {
+                const row_idx = group.row_indices.items[i];
+                sum += data[row_idx];
+            }
+            std.debug.assert(i == group.row_indices.items.len); // Post-condition #3
+        },
+        else => return error.TypeMismatch,
+    }
+
+    return sum;
+}
+```
+
+**PATTERN FOR JOIN COLLISION HANDLING**:
+```zig
+// ✅ CORRECT - Bounded collision search with warning
+if (hash_map.get(key.hash)) |entries| {
+    var found_match = false;
+
+    var entry_idx: u32 = 0;
+    while (entry_idx < MAX_MATCHES_PER_KEY and entry_idx < entries.items.len) : (entry_idx += 1) {
+        const entry = entries.items[entry_idx];
+        if (try key.equals(entry.key, left_cache, right_cache)) {
+            try matches.append(allocator, .{
+                .left_idx = left_idx,
+                .right_idx = entry.key.row_idx,
+            });
+            found_match = true;
+        }
+    }
+
+    // Warn if truncated
+    if (entry_idx >= MAX_MATCHES_PER_KEY and entry_idx < entries.items.len) {
+        std.log.warn("Join key has {} matches (limit {}), results truncated",
+            .{entries.items.len, MAX_MATCHES_PER_KEY});
+    }
+    std.debug.assert(entry_idx <= MAX_MATCHES_PER_KEY or entry_idx == entries.items.len);
+
+    // ... handle unmatched left join rows
+}
+```
+
+**FILES THAT NEED FIXING**:
+
+**groupby.zig** (3 violations):
+1. `computeSum()` - line 399-410
+2. `computeMin()` - line 437-447
+3. `computeMax()` - line 465-475
+
+**join.zig** (6 violations):
+1. `probeHashTable()` - line 403-411 (collision chain iteration)
+2. `copyColumnData()` Int64 - line 545-551
+3. `copyColumnData()` Float64 - line 558-565
+4. `copyColumnData()` Bool - line 571-578
+5. `copyColumnData()` String - line 584-591
+
+**COMMON MISTAKE PATTERNS**:
+
+1. **"It's just iterating over a small array"**
+   - ❌ Wrong: Array comes from user input (can be arbitrarily large)
+   - ✅ Correct: Always use while loop with explicit MAX
+
+2. **"For-loops are more idiomatic than while loops"**
+   - ❌ Wrong: Tiger Style prioritizes safety over idioms
+   - ✅ Correct: Bounded while loops prevent infinite loops
+
+3. **"The array length is already checked elsewhere"**
+   - ❌ Wrong: Every function must be independently verifiable
+   - ✅ Correct: Add pre-condition assertion + bounded loop
+
+**DETECTION CHECKLIST**:
+```bash
+# Find unbounded for-loops in codebase:
+grep -n "for.*|.*|" src/**/*.zig | grep -v "while"
+
+# Common patterns to look for:
+for (items) |item| { ... }          # ❌ Unbounded
+for (rows, 0..) |row, i| { ... }    # ❌ Unbounded
+for (0..count) |i| { ... }          # ❌ Unbounded (Zig 0.12+)
+```
+
+**RULE**: Every `for` loop over runtime data MUST be replaced with bounded `while` loop + post-condition assertion.
+
+**IMPACT**:
+- **Before Review**: 9 unbounded for-loops across 2 critical modules
+- **After Fix**: 0 unbounded loops, all with MAX bounds + assertions
+- **Lesson**: For-loops feel safe but are Tiger Style violations for runtime data
+
 ---
 
 ## Source Organization

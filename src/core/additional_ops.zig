@@ -68,10 +68,7 @@ pub fn unique(
 
     switch (col.value_type) {
         .Int64 => {
-            const data = switch (col.data) {
-                .Int64 => |slice| slice[0..df.row_count],
-                else => unreachable,
-            };
+            const data = col.asInt64() orelse return error.TypeMismatch;
             var i: u32 = 0;
             while (i < MAX_ROWS and i < df.row_count) : (i += 1) {
                 const value = data[i];
@@ -89,10 +86,7 @@ pub fn unique(
             std.debug.assert(i == df.row_count); // Post-condition
         },
         .Float64 => {
-            const data = switch (col.data) {
-                .Float64 => |slice| slice[0..df.row_count],
-                else => unreachable,
-            };
+            const data = col.asFloat64() orelse return error.TypeMismatch;
             var i: u32 = 0;
             while (i < MAX_ROWS and i < df.row_count) : (i += 1) {
                 const value = data[i];
@@ -110,7 +104,7 @@ pub fn unique(
             std.debug.assert(i == df.row_count); // Post-condition
         },
         .String => {
-            const string_col = col.asStringColumn() orelse unreachable;
+            const string_col = col.asStringColumn() orelse return error.TypeMismatch;
             var i: u32 = 0;
             while (i < MAX_ROWS and i < df.row_count) : (i += 1) {
                 const value = string_col.get(i);
@@ -124,10 +118,7 @@ pub fn unique(
             std.debug.assert(i == df.row_count); // Post-condition
         },
         .Bool => {
-            const data = switch (col.data) {
-                .Bool => |slice| slice[0..df.row_count],
-                else => unreachable,
-            };
+            const data = col.asBool() orelse return error.TypeMismatch;
             var has_true = false;
             var has_false = false;
 
@@ -191,7 +182,14 @@ pub fn dropDuplicates(
 
     // Use hash map to track seen rows
     var seen = std.StringHashMap(void).init(allocator);
-    defer seen.deinit();
+    defer {
+        // Free all keys in the hash map
+        var it = seen.keyIterator();
+        while (it.next()) |key_ptr| {
+            allocator.free(key_ptr.*);
+        }
+        seen.deinit();
+    }
 
     var keep_indices = std.ArrayListUnmanaged(u32){};
     defer keep_indices.deinit(allocator);
@@ -246,6 +244,13 @@ pub fn dropDuplicates(
         }
     }
     std.debug.assert(row_idx == df.row_count); // Post-condition #3
+
+    // Handle edge case: no unique rows (all duplicates)
+    if (keep_indices.items.len == 0) {
+        // Create empty DataFrame with same columns but 0 rows
+        const result = try DataFrame.create(allocator, df.column_descs, 0);
+        return result;
+    }
 
     // Create new DataFrame with unique rows
     var result = try DataFrame.create(allocator, df.column_descs, @intCast(keep_indices.items.len));
@@ -546,14 +551,36 @@ pub fn describe(
     for (df.columns) |*col| {
         switch (col.value_type) {
             .Int64 => {
-                const data = col.asInt64() orelse continue;
-                const summary = try computeNumericSummary(i64, data[0..df.row_count]);
-                try result.put(col.name, summary);
+                if (df.row_count == 0) {
+                    // Empty DataFrame - return summary with count=0
+                    try result.put(col.name, Summary{
+                        .count = 0,
+                        .mean = null,
+                        .std = null,
+                        .min = null,
+                        .max = null,
+                    });
+                } else {
+                    const data = col.asInt64() orelse continue;
+                    const summary = try computeNumericSummary(i64, data[0..df.row_count]);
+                    try result.put(col.name, summary);
+                }
             },
             .Float64 => {
-                const data = col.asFloat64() orelse continue;
-                const summary = try computeNumericSummary(f64, data[0..df.row_count]);
-                try result.put(col.name, summary);
+                if (df.row_count == 0) {
+                    // Empty DataFrame - return summary with count=0
+                    try result.put(col.name, Summary{
+                        .count = 0,
+                        .mean = null,
+                        .std = null,
+                        .min = null,
+                        .max = null,
+                    });
+                } else {
+                    const data = col.asFloat64() orelse continue;
+                    const summary = try computeNumericSummary(f64, data[0..df.row_count]);
+                    try result.put(col.name, summary);
+                }
             },
             .String, .Bool, .Null => {
                 // Non-numeric columns - only count

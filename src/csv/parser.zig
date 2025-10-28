@@ -20,6 +20,7 @@ const core_types = @import("../core/types.zig");
 const DataFrame = @import("../core/dataframe.zig").DataFrame;
 const Series = @import("../core/series.zig").Series;
 const SeriesValue = @import("../core/series.zig").SeriesValue;
+const simd = @import("../core/simd.zig");
 
 const ValueType = core_types.ValueType;
 const ColumnDesc = core_types.ColumnDesc;
@@ -79,7 +80,12 @@ pub const CSVParser = struct {
 
         std.debug.assert(start_pos <= 3); // BOM is 0 or 3 bytes
 
-        return CSVParser{
+        // Pre-allocate buffers to reduce reallocation overhead (temporarily disabled)
+        // const arena_alloc = arena.allocator();
+        // const estimated_rows = @min(buffer.len / 100, MAX_ROWS);
+        // const estimated_cols: u32 = 20;
+
+        const parser = CSVParser{
             .parent_allocator = allocator,
             .arena = arena,
             .buffer = buffer,
@@ -92,6 +98,14 @@ pub const CSVParser = struct {
             .current_row_index = 0,
             .current_col_index = 0,
         };
+
+        // Pre-allocate capacity (temporarily disabled to fix memory leaks - TODO: investigate)
+        // These pre-allocations improve performance but aren't required for correctness
+        // parser.current_field.ensureTotalCapacity(arena_alloc, 64) catch {};
+        // parser.current_row.ensureTotalCapacity(arena_alloc, estimated_cols) catch {};
+        // parser.rows.ensureTotalCapacity(arena_alloc, estimated_rows) catch {};
+
+        return parser;
     }
 
     /// Free parser resources

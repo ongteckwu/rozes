@@ -45,18 +45,16 @@ pub fn build(b: *std.Build) void {
     conformance_step.dependOn(&run_conformance.step);
 
     // Benchmark executable (ReleaseFast for accurate performance measurements)
-    const benchmark_module = b.createModule(.{
-        .root_source_file = b.path("src/test/benchmark/main.zig"),
-        .target = target,
-        .optimize = .ReleaseFast, // Important: use ReleaseFast for benchmarks
-    });
-    // Add rozes module as dependency so benchmarks can import DataFrame, etc.
-    benchmark_module.addImport("rozes", rozes_mod);
-
     const benchmark = b.addExecutable(.{
         .name = "rozes-benchmark",
-        .root_module = benchmark_module,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test/benchmark/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast, // Important: use ReleaseFast for benchmarks
+        }),
     });
+    // Add rozes module as dependency so benchmarks can import DataFrame, etc.
+    benchmark.root_module.addImport("rozes", rozes_mod);
 
     const run_benchmark = b.addRunArtifact(benchmark);
     const benchmark_step = b.step("benchmark", "Run performance benchmarks");
