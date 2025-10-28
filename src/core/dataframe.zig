@@ -355,11 +355,248 @@ pub const DataFrame = struct {
         const sort_mod = @import("sort.zig");
         return sort_mod.sortBy(self, allocator, specs);
     }
+
+    /// Groups DataFrame by a column for aggregation
+    ///
+    /// Args:
+    ///   - allocator: Allocator for GroupBy structure
+    ///   - column_name: Name of column to group by
+    ///
+    /// Returns: GroupBy object ready for aggregation (caller must call deinit())
+    ///
+    /// Performance: O(n) where n is number of rows
+    ///
+    /// Example:
+    /// ```zig
+    /// var grouped = try df.groupBy(allocator, "city");
+    /// defer grouped.deinit();
+    ///
+    /// const result = try grouped.agg(allocator, &[_]AggSpec{
+    ///     .{ .column = "age", .func = .Mean },
+    ///     .{ .column = "score", .func = .Sum },
+    /// });
+    /// defer result.deinit();
+    /// ```
+    pub fn groupBy(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        column_name: []const u8,
+    ) !GroupBy {
+        const groupby_mod = @import("groupby.zig");
+        return groupby_mod.GroupBy.init(allocator, self, column_name);
+    }
+
+    /// Performs inner join with another DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for result DataFrame
+    ///   - other: Right DataFrame to join with
+    ///   - join_cols: Column names to join on
+    ///
+    /// Returns: New DataFrame with matching rows (caller owns, must call deinit())
+    ///
+    /// Performance: O(n + m) where n, m are row counts
+    ///
+    /// Example:
+    /// ```zig
+    /// const joined = try df1.innerJoin(allocator, &df2, &[_][]const u8{"user_id"});
+    /// defer joined.deinit();
+    /// ```
+    pub fn innerJoin(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        other: *const DataFrame,
+        join_cols: []const []const u8,
+    ) !DataFrame {
+        const join_mod = @import("join.zig");
+        return join_mod.innerJoin(self, other, allocator, join_cols);
+    }
+
+    /// Performs left join with another DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for result DataFrame
+    ///   - other: Right DataFrame to join with
+    ///   - join_cols: Column names to join on
+    ///
+    /// Returns: New DataFrame with all left rows + matching right (caller owns, must call deinit())
+    ///
+    /// Performance: O(n + m) where n, m are row counts
+    ///
+    /// Example:
+    /// ```zig
+    /// const joined = try df1.leftJoin(allocator, &df2, &[_][]const u8{"user_id"});
+    /// defer joined.deinit();
+    /// ```
+    pub fn leftJoin(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        other: *const DataFrame,
+        join_cols: []const []const u8,
+    ) !DataFrame {
+        const join_mod = @import("join.zig");
+        return join_mod.leftJoin(self, other, allocator, join_cols);
+    }
+
+    /// Returns unique values from a column
+    ///
+    /// Args:
+    ///   - allocator: Allocator for result array
+    ///   - column_name: Name of column to get unique values from
+    ///
+    /// Returns: Array of unique values (caller must free)
+    ///
+    /// Performance: O(n) average case with hash map
+    ///
+    /// Example:
+    /// ```zig
+    /// const unique_cities = try df.unique(allocator, "city");
+    /// defer allocator.free(unique_cities);
+    /// ```
+    pub fn unique(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        column_name: []const u8,
+    ) ![]const []const u8 {
+        const ops = @import("additional_ops.zig");
+        return ops.unique(self, allocator, column_name);
+    }
+
+    /// Removes duplicate rows from DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - subset: Columns to consider for duplicates (all if null)
+    ///
+    /// Returns: New DataFrame without duplicates (caller owns, must call deinit())
+    ///
+    /// Performance: O(n * k) where n is rows, k is columns in subset
+    ///
+    /// Example:
+    /// ```zig
+    /// const no_dupes = try df.dropDuplicates(allocator, &[_][]const u8{"name", "age"});
+    /// defer no_dupes.deinit();
+    /// ```
+    pub fn dropDuplicates(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        subset: ?[]const []const u8,
+    ) !DataFrame {
+        const ops = @import("additional_ops.zig");
+        return ops.dropDuplicates(self, allocator, subset);
+    }
+
+    /// Renames columns in DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - rename_map: Map of old name -> new name
+    ///
+    /// Returns: New DataFrame with renamed columns (caller owns, must call deinit())
+    ///
+    /// Performance: O(n * m) where n is rows, m is columns
+    ///
+    /// Example:
+    /// ```zig
+    /// var rename_map = std.StringHashMap([]const u8).init(allocator);
+    /// try rename_map.put("old_name", "new_name");
+    /// const renamed = try df.rename(allocator, &rename_map);
+    /// defer renamed.deinit();
+    /// ```
+    pub fn rename(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        rename_map: *const std.StringHashMap([]const u8),
+    ) !DataFrame {
+        const ops = @import("additional_ops.zig");
+        return ops.rename(self, allocator, rename_map);
+    }
+
+    /// Returns first n rows of DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - n: Number of rows to return
+    ///
+    /// Returns: New DataFrame with first n rows (caller owns, must call deinit())
+    ///
+    /// Performance: O(n * m) where n is rows, m is columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const preview = try df.head(allocator, 10);
+    /// defer preview.deinit();
+    /// ```
+    pub fn head(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        n: u32,
+    ) !DataFrame {
+        const ops = @import("additional_ops.zig");
+        return ops.head(self, allocator, n);
+    }
+
+    /// Returns last n rows of DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - n: Number of rows to return
+    ///
+    /// Returns: New DataFrame with last n rows (caller owns, must call deinit())
+    ///
+    /// Performance: O(n * m) where n is rows, m is columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const last_rows = try df.tail(allocator, 10);
+    /// defer last_rows.deinit();
+    /// ```
+    pub fn tail(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        n: u32,
+    ) !DataFrame {
+        const ops = @import("additional_ops.zig");
+        return ops.tail(self, allocator, n);
+    }
+
+    /// Returns statistical summary of DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for result map
+    ///
+    /// Returns: Map of column name -> Summary (caller must deinit)
+    ///
+    /// Performance: O(n * m) where n is rows, m is numeric columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const summary = try df.describe(allocator);
+    /// defer summary.deinit();
+    ///
+    /// const age_summary = summary.get("age").?;
+    /// std.debug.print("Age - mean: {d}, std: {d}\n", .{age_summary.mean.?, age_summary.std.?});
+    /// ```
+    pub fn describe(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+    ) !std.StringHashMap(Summary) {
+        const ops = @import("additional_ops.zig");
+        return ops.describe(self, allocator);
+    }
 };
 
 // Re-export sort types for convenience
 pub const SortOrder = @import("sort.zig").SortOrder;
 pub const SortSpec = @import("sort.zig").SortSpec;
+
+// Re-export groupby types for convenience
+pub const GroupBy = @import("groupby.zig").GroupBy;
+pub const AggFunc = @import("groupby.zig").AggFunc;
+pub const AggSpec = @import("groupby.zig").AggSpec;
+
+// Re-export additional operations types for convenience
+pub const Summary = @import("additional_ops.zig").Summary;
 
 /// Reference to a single row in a DataFrame
 pub const RowRef = struct {

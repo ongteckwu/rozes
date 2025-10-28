@@ -44,6 +44,24 @@ pub fn build(b: *std.Build) void {
     const conformance_step = b.step("conformance", "Run RFC 4180 conformance tests from testdata/");
     conformance_step.dependOn(&run_conformance.step);
 
+    // Benchmark executable (ReleaseFast for accurate performance measurements)
+    const benchmark_module = b.createModule(.{
+        .root_source_file = b.path("src/test/benchmark/main.zig"),
+        .target = target,
+        .optimize = .ReleaseFast, // Important: use ReleaseFast for benchmarks
+    });
+    // Add rozes module as dependency so benchmarks can import DataFrame, etc.
+    benchmark_module.addImport("rozes", rozes_mod);
+
+    const benchmark = b.addExecutable(.{
+        .name = "rozes-benchmark",
+        .root_module = benchmark_module,
+    });
+
+    const run_benchmark = b.addRunArtifact(benchmark);
+    const benchmark_step = b.step("benchmark", "Run performance benchmarks");
+    benchmark_step.dependOn(&run_benchmark.step);
+
     // Wasm build for browser
     // Using wasi instead of freestanding to get POSIX-like APIs (needed for ArenaAllocator)
     const wasm_target = b.resolveTargetQuery(.{

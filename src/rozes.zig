@@ -38,6 +38,10 @@ pub const DataFrame = dataframe.DataFrame;
 pub const RowRef = dataframe.RowRef;
 pub const SortOrder = dataframe.SortOrder;
 pub const SortSpec = dataframe.SortSpec;
+pub const GroupBy = dataframe.GroupBy;
+pub const AggFunc = dataframe.AggFunc;
+pub const AggSpec = dataframe.AggSpec;
+pub const Summary = dataframe.Summary;
 
 // DataFrame operations
 pub const sort = @import("core/sort.zig");
@@ -69,6 +73,9 @@ test {
 
     // Include dedicated test files
     _ = @import("test/unit/core/sort_test.zig");
+    _ = @import("test/unit/core/groupby_test.zig");
+    _ = @import("test/unit/core/join_test.zig");
+    _ = @import("test/unit/core/additional_ops_test.zig");
     // NOTE: conformance_test.zig uses @embedFile which requires testdata/ to be
     // inside src/ or configured in build.zig. This is pending proper configuration.
     // For now, conformance tests are run manually in the test files themselves.
