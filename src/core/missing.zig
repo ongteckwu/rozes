@@ -15,12 +15,20 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const DataFrame = @import("dataframe.zig").DataFrame;
 const Series = @import("series.zig").Series;
 const types = @import("types.zig");
 const ValueType = types.ValueType;
 const ColumnDesc = types.ColumnDesc;
 const Allocator = std.mem.Allocator;
+
+/// Log error only when not in test mode (suppresses error output during tests)
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) {
+        std.log.err(fmt, args);
+    }
+}
 
 /// Maximum number of rows for operations
 const MAX_ROWS: u32 = 4_000_000_000;
@@ -450,7 +458,7 @@ fn shouldKeepRow(
     while (col_idx < MAX_COLUMNS and col_idx < columns_to_check.len) : (col_idx += 1) {
         const col_name = columns_to_check[col_idx];
         const col = df.column(col_name) orelse {
-            std.log.err("dropna: Column '{s}' not found in DataFrame", .{col_name});
+            logError("dropna: Column '{s}' not found in DataFrame", .{col_name});
             continue;
         };
 

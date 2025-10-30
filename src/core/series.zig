@@ -15,9 +15,17 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const ValueType = types.ValueType;
 const CategoricalColumn = @import("categorical.zig").CategoricalColumn;
+
+/// Log error only when not in test mode (suppresses error output during tests)
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) {
+        std.log.err(fmt, args);
+    }
+}
 
 /// A single column of typed data
 pub const Series = struct {
@@ -53,8 +61,7 @@ pub const Series = struct {
     ) !Series {
         // Allow empty names - valid edge case in CSV (e.g., ",b,c" header)
         std.debug.assert(@intFromPtr(name.ptr) != 0); // Pointer must be valid
-        std.debug.assert(capacity > 0); // Need some capacity
-        std.debug.assert(capacity <= MAX_ROWS); // Within limits
+        std.debug.assert(capacity <= MAX_ROWS); // Within limits (0 is valid for empty)
 
         const data = try SeriesData.allocate(allocator, value_type, capacity);
 
@@ -257,7 +264,29 @@ pub const Series = struct {
     pub fn get(self: *const Series, idx: u32) !SeriesValue {
         std.debug.assert(self.length <= MAX_ROWS); // Invariant
 
-        if (idx >= self.length) return error.IndexOutOfBounds;
+        if (idx >= self.length) {
+            // Only log errors when not in test mode
+            if (!@import("builtin").is_test) {
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const hint = std.fmt.allocPrint(temp_allocator,
+                    "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}",
+                    .{ idx, self.name, self.length, self.length - 1 }) catch unreachable;
+
+                const err_msg = types.RichError.init(.IndexOutOfBounds, "Series index out of bounds")
+                    .withColumn(self.name)
+                    .withHint(hint);
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    logError("{s}", .{formatted});
+                } else |_| {
+                    logError("Index {} out of bounds for series '{s}' (length {})", .{ idx, self.name, self.length });
+                }
+            }
+            return error.IndexOutOfBounds;
+        }
 
         return switch (self.data) {
             .Int64 => |slice| SeriesValue{ .Int64 = slice[idx] },
@@ -276,19 +305,99 @@ pub const Series = struct {
     pub fn set(self: *Series, idx: u32, value: SeriesValue) !void {
         std.debug.assert(self.length <= MAX_ROWS); // Invariant
 
-        if (idx >= self.length) return error.IndexOutOfBounds;
+        if (idx >= self.length) {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const temp_allocator = arena.allocator();
+
+            const hint = try std.fmt.allocPrint(temp_allocator,
+                "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}",
+                .{ idx, self.name, self.length, self.length - 1 });
+
+            const err_msg = types.RichError.init(.IndexOutOfBounds, "Series index out of bounds in set()")
+                .withColumn(self.name)
+                .withHint(hint);
+
+            if (err_msg.format(temp_allocator)) |formatted| {
+                logError("{s}", .{formatted});
+            } else |_| {
+                logError("Index {} out of bounds for series '{s}' (length {})", .{ idx, self.name, self.length });
+            }
+
+            return error.IndexOutOfBounds;
+        }
 
         switch (self.data) {
             .Int64 => |slice| {
-                if (value != .Int64) return error.TypeMismatch;
+                if (value != .Int64) {
+                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer arena.deinit();
+                    const temp_allocator = arena.allocator();
+
+                    const hint = try std.fmt.allocPrint(temp_allocator,
+                        "Series '{s}' has type Int64, but received {s}",
+                        .{ self.name, @tagName(value) });
+
+                    const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
+                        .withColumn(self.name)
+                        .withHint(hint);
+
+                    if (err_msg.format(temp_allocator)) |formatted| {
+                        logError("{s}", .{formatted});
+                    } else |_| {
+                        logError("Type mismatch for series '{s}': expected Int64, got {s}", .{ self.name, @tagName(value) });
+                    }
+
+                    return error.TypeMismatch;
+                }
                 slice[idx] = value.Int64;
             },
             .Float64 => |slice| {
-                if (value != .Float64) return error.TypeMismatch;
+                if (value != .Float64) {
+                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer arena.deinit();
+                    const temp_allocator = arena.allocator();
+
+                    const hint = try std.fmt.allocPrint(temp_allocator,
+                        "Series '{s}' has type Float64, but received {s}",
+                        .{ self.name, @tagName(value) });
+
+                    const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
+                        .withColumn(self.name)
+                        .withHint(hint);
+
+                    if (err_msg.format(temp_allocator)) |formatted| {
+                        logError("{s}", .{formatted});
+                    } else |_| {
+                        logError("Type mismatch for series '{s}': expected Float64, got {s}", .{ self.name, @tagName(value) });
+                    }
+
+                    return error.TypeMismatch;
+                }
                 slice[idx] = value.Float64;
             },
             .Bool => |slice| {
-                if (value != .Bool) return error.TypeMismatch;
+                if (value != .Bool) {
+                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer arena.deinit();
+                    const temp_allocator = arena.allocator();
+
+                    const hint = try std.fmt.allocPrint(temp_allocator,
+                        "Series '{s}' has type Bool, but received {s}",
+                        .{ self.name, @tagName(value) });
+
+                    const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
+                        .withColumn(self.name)
+                        .withHint(hint);
+
+                    if (err_msg.format(temp_allocator)) |formatted| {
+                        logError("{s}", .{formatted});
+                    } else |_| {
+                        logError("Type mismatch for series '{s}': expected Bool, got {s}", .{ self.name, @tagName(value) });
+                    }
+
+                    return error.TypeMismatch;
+                }
                 slice[idx] = value.Bool;
             },
             .String => {
@@ -296,7 +405,27 @@ pub const Series = struct {
                 // Strings are immutable once added to StringColumn
                 return error.OperationNotSupported;
             },
-            else => return error.TypeMismatch,
+            else => {
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const hint = try std.fmt.allocPrint(temp_allocator,
+                    "Series '{s}' has type {s} which doesn't support set()",
+                    .{ self.name, @tagName(self.value_type) });
+
+                const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
+                    .withColumn(self.name)
+                    .withHint(hint);
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    logError("{s}", .{formatted});
+                } else |_| {
+                    logError("Type mismatch for series '{s}'", .{self.name});
+                }
+
+                return error.TypeMismatch;
+            },
         }
     }
 
@@ -316,7 +445,27 @@ pub const Series = struct {
             .Null => 0,
         };
 
-        if (self.length >= capacity) return error.OutOfCapacity;
+        if (self.length >= capacity) {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const temp_allocator = arena.allocator();
+
+            const hint = try std.fmt.allocPrint(temp_allocator,
+                "Series '{s}' is at capacity {} with {} elements. Cannot append more elements. Consider pre-allocating larger capacity when creating Series.",
+                .{ self.name, capacity, self.length });
+
+            const err_msg = types.RichError.init(.InvalidOptions, "Series at capacity")
+                .withColumn(self.name)
+                .withHint(hint);
+
+            if (err_msg.format(temp_allocator)) |formatted| {
+                logError("{s}", .{formatted});
+            } else |_| {
+                logError("Series '{s}' at capacity {} with {} elements", .{ self.name, capacity, self.length });
+            }
+
+            return error.OutOfCapacity;
+        }
 
         // Directly write to buffer (bypass bounds check in set)
         switch (self.data) {
@@ -417,9 +566,7 @@ pub const StringColumn = struct {
         capacity: u32,
         initial_buffer_size: u32,
     ) !StringColumn {
-        std.debug.assert(capacity > 0); // Need capacity
-        std.debug.assert(capacity <= MAX_STRINGS); // Within limits
-        std.debug.assert(initial_buffer_size > 0); // Need buffer
+        std.debug.assert(capacity <= MAX_STRINGS); // Within limits (0 is valid)
         std.debug.assert(initial_buffer_size <= MAX_BUFFER_SIZE); // Buffer not too large
 
         const offsets = try allocator.alloc(u32, capacity);
@@ -489,7 +636,26 @@ pub const StringColumn = struct {
             std.debug.assert(new_size >= current_size); // Growth occurred or at max
             std.debug.assert(new_size >= needed_size or new_size == MAX_BUFFER_SIZE); // Sufficient or at limit
 
-            if (new_size < needed_size) return error.BufferTooSmall;
+            if (new_size < needed_size) {
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const hint = try std.fmt.allocPrint(temp_allocator,
+                    "String buffer reached maximum size {} bytes but needs {} bytes. Consider splitting data across multiple columns or using external storage.",
+                    .{ MAX_BUFFER_SIZE, needed_size });
+
+                const err_msg = types.RichError.init(.InvalidOptions, "String buffer too small")
+                    .withHint(hint);
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    logError("{s}", .{formatted});
+                } else |_| {
+                    logError("String buffer max size {} insufficient for {} bytes", .{ MAX_BUFFER_SIZE, needed_size });
+                }
+
+                return error.BufferTooSmall;
+            }
 
             const new_buffer = try allocator.realloc(self.buffer, new_size);
             self.buffer = new_buffer;
@@ -546,8 +712,7 @@ pub const SeriesData = union(ValueType) {
 
     /// Allocates storage for the given type
     fn allocate(allocator: std.mem.Allocator, valueType: ValueType, capacity: u32) !SeriesData {
-        std.debug.assert(capacity > 0); // Need capacity
-        std.debug.assert(capacity <= Series.MAX_ROWS); // Within limits
+        std.debug.assert(capacity <= Series.MAX_ROWS); // Within limits (0 is valid)
 
         return switch (valueType) {
             .Int64 => SeriesData{
@@ -561,8 +726,9 @@ pub const SeriesData = union(ValueType) {
             },
             .String => blk: {
                 // Estimate initial buffer size: avg 50 chars per string
+                // For empty DataFrames (capacity 0), use minimal buffer
                 const avg_string_length: u32 = 50;
-                const initial_buffer_size = capacity * avg_string_length;
+                const initial_buffer_size = if (capacity == 0) 1 else capacity * avg_string_length;
                 const col = try StringColumn.init(allocator, capacity, initial_buffer_size);
                 break :blk SeriesData{ .String = col };
             },

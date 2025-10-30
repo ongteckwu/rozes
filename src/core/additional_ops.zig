@@ -308,10 +308,16 @@ pub fn dropDuplicates(
                 }
             },
             .Categorical => {
-                // Categorical: shared dictionary, similar limitation as filter
-                // TODO(0.4.0): Implement proper categorical deduplication
-                // For now, just shallow copy the pointer
-                dst_col.data = src_col.data;
+                // Deep copy categorical with independent dictionary
+                const src_cat_col = src_col.asCategoricalColumn() orelse unreachable;
+                const new_cat_col = try src_cat_col.deepCopyRows(
+                    result.arena.allocator(),
+                    keep_indices.items,
+                );
+
+                // Replace the categorical column in result DataFrame
+                dst_col.data = .{ .Categorical = try result.arena.allocator().create(@TypeOf(new_cat_col)) };
+                dst_col.data.Categorical.* = new_cat_col;
             },
             .Null => {},
         }

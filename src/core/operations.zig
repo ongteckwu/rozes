@@ -15,12 +15,20 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const DataFrame = @import("dataframe.zig").DataFrame;
 const Series = @import("series.zig").Series;
 const ColumnDesc = types.ColumnDesc;
 const ValueType = types.ValueType;
 const RowRef = @import("dataframe.zig").RowRef;
+
+/// Log error only when not in test mode (suppresses error output during tests)
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) {
+        std.log.err(fmt, args);
+    }
+}
 
 /// Maximum number of columns for operations
 const MAX_COLS: u32 = 10_000;
@@ -41,24 +49,26 @@ pub fn select(
     df: *const DataFrame,
     column_names: []const []const u8,
 ) !DataFrame {
-    std.debug.assert(column_names.len > 0); // Need at least one column
+    // Check for empty column list
+    if (column_names.len == 0) {
+        return error.EmptyColumnList;
+    }
+    std.debug.assert(column_names.len > 0); // Should never trigger after check above
     std.debug.assert(column_names.len <= MAX_COLS); // Reasonable limit
 
     // Validate all column names exist
-    for (column_names) |name| {
-        if (!df.hasColumn(name)) {
+    var name_idx: u32 = 0;
+    while (name_idx < MAX_COLS and name_idx < column_names.len) : (name_idx += 1) {
+        if (!df.hasColumn(column_names[name_idx])) {
             // Return error without logging - let caller decide to log
             return error.ColumnNotFound;
         }
     }
+    std.debug.assert(name_idx == column_names.len); // Checked all names
 
     // Create column descriptors for selected columns
-    // Note: df is const, but we need allocator from the arena.
-    // The arena itself is a value in DataFrame, so we need to cast away const
-    // for the allocator() call which requires mutable access.
-    const arena_ptr = @constCast(&df.arena);
-    const arena_allocator = arena_ptr.allocator();
-    var col_descs = try arena_allocator.alloc(ColumnDesc, column_names.len);
+    const allocator = df.getAllocator();
+    var col_descs = try allocator.alloc(ColumnDesc, column_names.len);
 
     var col_idx: u32 = 0;
     while (col_idx < MAX_COLS and col_idx < column_names.len) : (col_idx += 1) {
@@ -96,7 +106,7 @@ pub fn select(
             },
             .Bool => {
                 const src_data = src_col.asBool().?;
-                const dst_data = dst_col.asBool().?;
+                const dst_data = dst_col.asBoolBuffer().?;
                 @memcpy(dst_data[0..src_data.len], src_data);
             },
             .String => {
@@ -104,21 +114,41 @@ pub fn select(
                 var dst_string_col = dst_col.asStringColumnMut().?;
 
                 // Copy each string from source to destination
-                const df_arena = @constCast(&new_df.arena);
-                const df_arena_allocator = df_arena.allocator();
+                const new_df_allocator = new_df.getAllocator();
 
                 var str_idx: u32 = 0;
                 while (str_idx < MAX_ROWS and str_idx < src_string_col.count) : (str_idx += 1) {
                     const str = src_string_col.get(str_idx);
-                    try dst_string_col.append(df_arena_allocator, str);
+                    try dst_string_col.append(new_df_allocator, str);
                 }
 
                 std.debug.assert(str_idx == src_string_col.count); // Copied all strings
             },
             .Categorical => {
-                // Categorical columns are stored as pointers, just copy the pointer
-                // Note: This is shallow copy - both DataFrames share the same categorical data
-                dst_col.data = src_col.data;
+                const src_cat_col = src_col.asCategoricalColumn().?;
+
+                // Create deep copy with all rows (independent dictionary)
+                const new_df_allocator = new_df.getAllocator();
+
+                // Extract all row indices
+                var all_indices = try new_df_allocator.alloc(u32, src_cat_col.count);
+                defer new_df_allocator.free(all_indices);
+
+                var i: u32 = 0;
+                while (i < MAX_ROWS and i < src_cat_col.count) : (i += 1) {
+                    all_indices[i] = i;
+                }
+                std.debug.assert(i == src_cat_col.count); // Generated all indices
+
+                // Deep copy creates independent dictionary
+                const new_cat_col = try src_cat_col.deepCopyRows(
+                    new_df_allocator,
+                    all_indices,
+                );
+
+                // Store the deep copy
+                dst_col.data = .{ .Categorical = try new_df_allocator.create(@TypeOf(new_cat_col)) };
+                dst_col.data.Categorical.* = new_cat_col;
             },
             .Null => {}, // No data to copy
         }
@@ -150,9 +180,8 @@ pub fn drop(
     }
 
     // Build list of columns to keep
-    const arena_ptr = @constCast(&df.arena);
-    const arena_allocator = arena_ptr.allocator();
-    var keep_names = try arena_allocator.alloc([]const u8, df.columnCount());
+    const allocator = df.getAllocator();
+    var keep_names = try allocator.alloc([]const u8, df.columnCount());
     var keep_count: usize = 0;
 
     // Check each column in DataFrame
@@ -162,8 +191,9 @@ pub fn drop(
 
         // Check if this column should be dropped
         var should_drop = false;
-        for (column_names) |drop_name| {
-            if (std.mem.eql(u8, col_name, drop_name)) {
+        var drop_idx: u32 = 0;
+        while (drop_idx < MAX_COLS and drop_idx < column_names.len) : (drop_idx += 1) {
+            if (std.mem.eql(u8, col_name, column_names[drop_idx])) {
                 should_drop = true;
                 break;
             }
@@ -200,13 +230,19 @@ pub fn filter(
     std.debug.assert(df.len() > 0); // Need data to filter
     std.debug.assert(df.columnCount() > 0); // Need columns
 
-    // First pass: count matching rows
+    // First pass: count matching rows and collect their indices
     var match_count: u32 = 0;
     var row_idx: u32 = 0;
+
+    // Allocate array to store matching row indices (needed for categorical deep copy)
+    const allocator = df.getAllocator();
+    var matching_indices = try allocator.alloc(u32, df.len());
+    defer allocator.free(matching_indices);
 
     while (row_idx < df.len()) : (row_idx += 1) {
         const row = try df.row(row_idx);
         if (predicate(row)) {
+            matching_indices[match_count] = row_idx;
             match_count += 1;
         }
     }
@@ -219,67 +255,78 @@ pub fn filter(
     errdefer new_df.deinit();
 
     // Second pass: copy matching rows
-    row_idx = 0;
     var dst_idx: u32 = 0;
 
-    while (row_idx < df.len()) : (row_idx += 1) {
-        const row = try df.row(row_idx);
-        if (predicate(row)) {
-            // Copy row data
-            var col_idx: u32 = 0;
-            while (col_idx < MAX_COLS and col_idx < df.columnCount()) : (col_idx += 1) {
-                const src_col = &df.columns[col_idx];
-                const dst_col = &new_df.columns[col_idx];
+    while (dst_idx < MAX_ROWS and dst_idx < match_count) : (dst_idx += 1) {
+        const src_row_idx = matching_indices[dst_idx];
 
-                switch (src_col.value_type) {
-                    .Int64 => {
-                        const src_data = src_col.asInt64().?;
-                        const dst_data = dst_col.asInt64Buffer().?;
-                        dst_data[dst_idx] = src_data[row_idx];
-                    },
-                    .Float64 => {
-                        const src_data = src_col.asFloat64().?;
-                        const dst_data = dst_col.asFloat64Buffer().?;
-                        dst_data[dst_idx] = src_data[row_idx];
-                    },
-                    .Bool => {
-                        const src_data = src_col.asBool().?;
-                        const dst_data = dst_col.asBoolBuffer().?;
-                        dst_data[dst_idx] = src_data[row_idx];
-                    },
-                    .String => {
-                        const src_string_col = src_col.asStringColumn().?;
-                        var dst_string_col = dst_col.asStringColumnMut().?;
+        // Copy row data
+        var col_idx: u32 = 0;
+        while (col_idx < MAX_COLS and col_idx < df.columnCount()) : (col_idx += 1) {
+            const src_col = &df.columns[col_idx];
+            const dst_col = &new_df.columns[col_idx];
 
-                        const str = src_string_col.get(row_idx);
-                        const df_arena = @constCast(&new_df.arena);
-                        const df_arena_allocator = df_arena.allocator();
-                        try dst_string_col.append(df_arena_allocator, str);
-                    },
-                    .Categorical => {
-                        // For filter, we need to append categorical values one by one
-                        // to build a new categorical column with filtered rows
-                        const src_cat_col = src_col.asCategoricalColumn().?;
-                        const str = src_cat_col.get(row_idx);
+            switch (src_col.value_type) {
+                .Int64 => {
+                    const src_data = src_col.asInt64().?;
+                    const dst_data = dst_col.asInt64Buffer().?;
+                    dst_data[dst_idx] = src_data[src_row_idx];
+                },
+                .Float64 => {
+                    const src_data = src_col.asFloat64().?;
+                    const dst_data = dst_col.asFloat64Buffer().?;
+                    dst_data[dst_idx] = src_data[src_row_idx];
+                },
+                .Bool => {
+                    const src_data = src_col.asBool().?;
+                    const dst_data = dst_col.asBoolBuffer().?;
+                    dst_data[dst_idx] = src_data[src_row_idx];
+                },
+                .String => {
+                    const src_string_col = src_col.asStringColumn().?;
+                    var dst_string_col = dst_col.asStringColumnMut().?;
 
-                        // Get mutable categorical column from dst
-                        // Note: This requires implementing appendCategorical in Series
-                        // For MVP, we'll treat it as immutable shared structure
-                        // TODO(0.4.0): Implement proper categorical filtering
-                        // For now, dst column already shares the pointer, but codes won't match
-                        // This is a known limitation - filter with categorical needs implementation
-                        _ = str; // Suppress unused warning
-                    },
-                    .Null => {}, // No data to copy
-                }
+                    const str = src_string_col.get(src_row_idx);
+                    const new_df_allocator = new_df.getAllocator();
+                    try dst_string_col.append(new_df_allocator, str);
+                },
+                .Categorical => {
+                    // Categorical columns are handled in the deep copy pass below
+                    // We'll rebuild the dictionary after collecting all matching rows
+                },
+                .Null => {}, // No data to copy
             }
-
-            std.debug.assert(col_idx == df.columnCount()); // Copied all columns
-            dst_idx += 1;
         }
+
+        std.debug.assert(col_idx == df.columnCount()); // Copied all columns
     }
 
     std.debug.assert(dst_idx == match_count); // Copied all matching rows
+
+    // Third pass: Deep copy categorical columns with new dictionaries
+    // This ensures the filtered DataFrame has independent categorical data
+    var col_idx: u32 = 0;
+    while (col_idx < MAX_COLS and col_idx < df.columnCount()) : (col_idx += 1) {
+        const src_col = &df.columns[col_idx];
+        if (src_col.value_type == .Categorical) {
+            const src_cat_col = src_col.asCategoricalColumn().?;
+
+            // Create deep copy with only matching rows
+            const new_df_allocator = new_df.getAllocator();
+            const new_cat_col = try src_cat_col.deepCopyRows(
+                new_df_allocator,
+                matching_indices[0..match_count],
+            );
+
+            // Replace the categorical column in the new DataFrame
+            // First, free the old pointer (shallow copy from create())
+            const dst_col = &new_df.columns[col_idx];
+            dst_col.data = .{ .Categorical = try new_df_allocator.create(@TypeOf(new_cat_col)) };
+            dst_col.data.Categorical.* = new_cat_col;
+        }
+    }
+
+    std.debug.assert(col_idx == df.columnCount()); // Processed all columns
 
     try new_df.setRowCount(match_count);
     return new_df;

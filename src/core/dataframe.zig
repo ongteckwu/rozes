@@ -18,12 +18,20 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const series_mod = @import("series.zig");
 
 const ValueType = types.ValueType;
-const ColumnDesc = types.ColumnDesc;
+pub const ColumnDesc = types.ColumnDesc;
 const Series = series_mod.Series;
+
+/// Log error only when not in test mode (suppresses error output during tests)
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) {
+        std.log.err(fmt, args);
+    }
+}
 
 /// Multi-column table with typed data
 pub const DataFrame = struct {
@@ -60,8 +68,7 @@ pub const DataFrame = struct {
     ) !DataFrame {
         std.debug.assert(columnDescs.len > 0); // Need at least one column
         std.debug.assert(columnDescs.len <= MAX_COLS); // Reasonable limit
-        std.debug.assert(capacity > 0); // Need some capacity
-        std.debug.assert(capacity <= MAX_ROWS); // Within row limit
+        std.debug.assert(capacity <= MAX_ROWS); // Within row limit (0 is valid for empty DataFrame)
 
         // Create arena for DataFrame lifetime
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -104,6 +111,20 @@ pub const DataFrame = struct {
         self.column_descs = &[_]ColumnDesc{};
         self.columns = &[_]Series{};
         self.row_count = 0;
+    }
+
+    /// Gets the allocator for this DataFrame
+    ///
+    /// This is a convenience method to avoid @constCast hacks throughout the codebase.
+    /// The arena allocator is owned by the DataFrame and all allocations from it
+    /// are freed when deinit() is called.
+    ///
+    /// Returns: Allocator for DataFrame operations
+    pub fn getAllocator(self: *const DataFrame) std.mem.Allocator {
+        std.debug.assert(self.columns.len > 0); // DataFrame should be initialized
+        std.debug.assert(self.columns.len <= MAX_COLS); // Invariant check
+
+        return @constCast(&self.arena).allocator();
     }
 
     /// Returns the number of rows

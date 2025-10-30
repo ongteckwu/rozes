@@ -322,17 +322,28 @@ test "sort preserves row count" {
     try testing.expectEqual(@as(u32, 100), sorted.row_count);
 }
 
-// Test: Sort empty DataFrame (should trigger assertion in debug mode)
-test "sort empty DataFrame triggers assertion" {
-    // Note: In Tiger Style, assertions are used for pre-conditions.
-    // Sorting an empty DataFrame will trigger an assertion in debug builds
-    // rather than returning an error. This test documents that behavior.
-    // In release builds, behavior is undefined for empty DataFrames.
+// Test: Sort empty DataFrame (should return empty DataFrame)
+test "sort empty DataFrame returns empty DataFrame" {
+    const allocator = testing.allocator;
 
-    // This test is intentionally skipped because it would trigger an assertion
-    // and cause the test suite to fail. The behavior is documented in the
-    // sort function's pre-conditions.
-    return error.SkipZigTest;
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("value", .Int64, 0),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 1);
+    defer df.deinit();
+
+    // Set row count to 0
+    try df.setRowCount(0);
+
+    // Sort empty DataFrame should succeed
+    var sorted = try sort_mod.sort(&df, allocator, "value", .Ascending);
+    defer sorted.deinit();
+
+    // Should return empty DataFrame with same structure
+    try testing.expectEqual(@as(u32, 0), sorted.row_count);
+    try testing.expectEqual(@as(usize, 1), sorted.columns.len);
+    try testing.expectEqualStrings("value", sorted.column_descs[0].name);
 }
 
 // Test: Sort by non-existent column

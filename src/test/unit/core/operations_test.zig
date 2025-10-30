@@ -131,13 +131,9 @@ test "select: error on empty column list" {
     var df = try DataFrame.create(allocator, &cols, 5);
     defer df.deinit();
 
-    // Empty column list should trigger assertion in debug builds
-    // In release, it would try to select 0 columns
+    // Empty column list should return EmptyColumnList error
     const empty_cols: []const []const u8 = &[_][]const u8{};
-    if (empty_cols.len == 0) {
-        // Skip test - would trigger assertion
-        return error.SkipZigTest;
-    }
+    try testing.expectError(error.EmptyColumnList, select(&df, empty_cols));
 }
 
 test "select: preserves data types correctly" {
@@ -164,15 +160,64 @@ test "select: preserves data types correctly" {
 }
 
 test "select: works with empty DataFrame (0 rows)" {
-    // TODO: Fix select() to handle empty DataFrames properly
-    // Currently fails with index out of bounds when copying data from empty columns
-    return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("a", .Int64, 0),
+        ColumnDesc.init("b", .Float64, 1),
+        ColumnDesc.init("c", .Bool, 2),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 5);
+    defer df.deinit();
+
+    // Set row count to 0 (empty DataFrame)
+    try df.setRowCount(0);
+
+    // Select columns from empty DataFrame
+    var selected = try select(&df, &[_][]const u8{ "a", "c" });
+    defer selected.deinit();
+
+    // Should have correct columns but 0 rows
+    try testing.expectEqual(@as(usize, 2), selected.columnCount());
+    try testing.expectEqual(@as(u32, 0), selected.len());
+    try testing.expect(selected.hasColumn("a"));
+    try testing.expect(selected.hasColumn("c"));
+    try testing.expect(!selected.hasColumn("b"));
 }
 
 test "select: handles Bool column data" {
-    // TODO: Fix Bool column handling in select() operation
-    // Currently fails when copying Bool data - needs investigation
-    return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("active", .Bool, 0),
+        ColumnDesc.init("value", .Int64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 5);
+    defer df.deinit();
+
+    // Fill Bool column
+    const active_col = df.columnMut("active").?;
+    const active_data = active_col.asBoolBuffer().?;
+    active_data[0] = true;
+    active_data[1] = false;
+    active_data[2] = true;
+
+    try df.setRowCount(3);
+
+    // Select Bool column
+    var selected = try select(&df, &[_][]const u8{"active"});
+    defer selected.deinit();
+
+    try testing.expectEqual(@as(usize, 1), selected.columnCount());
+    try testing.expect(selected.column("active").?.value_type == .Bool);
+
+    // Verify data was copied correctly
+    const selected_active = selected.column("active").?.asBool().?;
+    try testing.expect(selected_active[0]);
+    try testing.expect(!selected_active[1]);
+    try testing.expect(selected_active[2]);
 }
 
 test "select: large column count (100 columns)" {
@@ -450,9 +495,56 @@ test "filter: Float64 column range" {
 }
 
 test "filter: Bool column equality" {
-    // TODO: Fix Bool column handling in filter() operation
-    // Currently fails when copying Bool data from filtered results
-    return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("active", .Bool, 0),
+        ColumnDesc.init("value", .Int64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 10);
+    defer df.deinit();
+
+    const active_col = df.columnMut("active").?;
+    const active_data = active_col.asBoolBuffer().?;
+    active_data[0] = true;
+    active_data[1] = false;
+    active_data[2] = true;
+    active_data[3] = false;
+    active_data[4] = true;
+
+    const val_col = df.columnMut("value").?;
+    const val_data = val_col.asInt64Buffer().?;
+    val_data[0] = 10;
+    val_data[1] = 20;
+    val_data[2] = 30;
+    val_data[3] = 40;
+    val_data[4] = 50;
+
+    try df.setRowCount(5);
+
+    // Filter: active == true
+    var filtered = try filter(&df, struct {
+        fn pred(row: RowRef) bool {
+            const active = row.getBool("active") orelse return false;
+            return active;
+        }
+    }.pred);
+    defer filtered.deinit();
+
+    try testing.expectEqual(@as(u32, 3), filtered.len());
+
+    // Verify Bool column preserved
+    const filtered_active = filtered.column("active").?.asBool().?;
+    try testing.expect(filtered_active[0]);
+    try testing.expect(filtered_active[1]);
+    try testing.expect(filtered_active[2]);
+
+    // Verify values match (10, 30, 50)
+    const filtered_values = filtered.column("value").?.asInt64().?;
+    try testing.expectEqual(@as(i64, 10), filtered_values[0]);
+    try testing.expectEqual(@as(i64, 30), filtered_values[1]);
+    try testing.expectEqual(@as(i64, 50), filtered_values[2]);
 }
 
 test "filter: multiple column conditions (AND)" {
@@ -585,9 +677,62 @@ test "filter: handles null column access gracefully" {
 }
 
 test "filter: preserves all column data for matching rows" {
-    // TODO: Fix Bool column handling in filter() operation
-    // Currently fails when DataFrame contains Bool columns
-    return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("score", .Float64, 1),
+        ColumnDesc.init("active", .Bool, 2),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 10);
+    defer df.deinit();
+
+    // Fill data
+    const id_col = df.columnMut("id").?;
+    const ids = id_col.asInt64Buffer().?;
+    ids[0] = 1;
+    ids[1] = 2;
+    ids[2] = 3;
+
+    const score_col = df.columnMut("score").?;
+    const scores = score_col.asFloat64Buffer().?;
+    scores[0] = 85.5;
+    scores[1] = 92.3;
+    scores[2] = 78.1;
+
+    const active_col = df.columnMut("active").?;
+    const active_data = active_col.asBoolBuffer().?;
+    active_data[0] = true;
+    active_data[1] = false;
+    active_data[2] = true;
+
+    try df.setRowCount(3);
+
+    // Filter: score >= 80
+    var filtered = try filter(&df, struct {
+        fn pred(row: RowRef) bool {
+            const score = row.getFloat64("score") orelse return false;
+            return score >= 80.0;
+        }
+    }.pred);
+    defer filtered.deinit();
+
+    try testing.expectEqual(@as(u32, 2), filtered.len());
+    try testing.expectEqual(@as(usize, 3), filtered.columnCount());
+
+    // Verify all columns preserved correctly
+    const filtered_ids = filtered.column("id").?.asInt64().?;
+    try testing.expectEqual(@as(i64, 1), filtered_ids[0]);
+    try testing.expectEqual(@as(i64, 2), filtered_ids[1]);
+
+    const filtered_scores = filtered.column("score").?.asFloat64().?;
+    try testing.expectApproxEqRel(@as(f64, 85.5), filtered_scores[0], 0.01);
+    try testing.expectApproxEqRel(@as(f64, 92.3), filtered_scores[1], 0.01);
+
+    const filtered_active = filtered.column("active").?.asBool().?;
+    try testing.expect(filtered_active[0]); // true
+    try testing.expect(!filtered_active[1]); // false
 }
 
 // =============================================================================

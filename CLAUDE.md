@@ -754,3 +754,6 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 - all document creation should be in docs/
 - whenever a todo is done, update @docs/TODO.md
 - add a src/profiling_tools and keep the tools there
+- when finishing a TODO task, please update @docs/TODO.md
+- whenever finishing a task, update @docs/TODO.md
+- all new docs should go into /docs

@@ -67,8 +67,12 @@ pub fn sort(
     column_name: []const u8,
     order: SortOrder,
 ) !DataFrame {
-    std.debug.assert(df.row_count > 0); // Pre-condition #1: Non-empty
-    std.debug.assert(column_name.len > 0); // Pre-condition #2: Valid column name
+    std.debug.assert(column_name.len > 0); // Pre-condition: Valid column name
+
+    // Handle empty DataFrame - return a copy as-is
+    if (df.row_count == 0) {
+        return DataFrame.create(allocator, df.column_descs, 0);
+    }
 
     // Create single-column sort spec
     const spec = SortSpec{
@@ -78,7 +82,7 @@ pub fn sort(
 
     const result = try sortBy(df, allocator, &[_]SortSpec{spec});
 
-    std.debug.assert(result.row_count == df.row_count); // Post-condition #3: Same size
+    std.debug.assert(result.row_count == df.row_count); // Post-condition: Same size
     return result;
 }
 
@@ -97,9 +101,13 @@ pub fn sortBy(
     allocator: std.mem.Allocator,
     specs: []const SortSpec,
 ) !DataFrame {
-    std.debug.assert(df.row_count > 0); // Pre-condition #1: Non-empty
-    std.debug.assert(specs.len > 0); // Pre-condition #2: At least one sort spec
-    std.debug.assert(specs.len <= MAX_SORT_COLS); // Pre-condition #3: Reasonable limit
+    std.debug.assert(specs.len > 0); // Pre-condition #1: At least one sort spec
+    std.debug.assert(specs.len <= MAX_SORT_COLS); // Pre-condition #2: Reasonable limit
+
+    // Handle empty DataFrame - return a copy as-is
+    if (df.row_count == 0) {
+        return DataFrame.create(allocator, df.column_descs, 0);
+    }
 
     // Create index array [0, 1, 2, ..., n-1]
     const indices = try allocator.alloc(u32, df.row_count);

@@ -803,10 +803,26 @@ fn copyColumnData(
             std.debug.assert(i == matches.items.len); // Post-condition
         },
         .Categorical => {
-            // Categorical: Shallow copy (shared dictionary structure)
-            // TODO(0.4.0): Implement proper categorical join with row filtering
-            // For now, just copy the pointer - limitation similar to filter/dropDuplicates
-            dst_col.data = src_col.data;
+            // Deep copy categorical with independent dictionary
+            const src_cat_col = src_col.asCategoricalColumn() orelse return error.TypeMismatch;
+
+            // Build array of source row indices from matches
+            var src_indices = try allocator.alloc(u32, matches.items.len);
+            defer allocator.free(src_indices);
+
+            var i: u32 = 0;
+            while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
+                const match = matches.items[i];
+                src_indices[i] = if (from_left) match.left_idx else match.right_idx orelse 0; // Use 0 for null (will be first category)
+            }
+            std.debug.assert(i == matches.items.len); // Post-condition
+
+            // Create deep copy with collected indices
+            const new_cat_col = try src_cat_col.deepCopyRows(allocator, src_indices);
+
+            // Replace the categorical column
+            dst_col.data = .{ .Categorical = try allocator.create(@TypeOf(new_cat_col)) };
+            dst_col.data.Categorical.* = new_cat_col;
         },
         .Null => {},
     }

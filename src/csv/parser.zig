@@ -25,6 +25,8 @@ const simd = @import("../core/simd.zig");
 const ValueType = core_types.ValueType;
 const ColumnDesc = core_types.ColumnDesc;
 const CSVOptions = core_types.CSVOptions;
+const RichError = core_types.RichError;
+const ErrorCode = core_types.ErrorCode;
 
 /// Parser state machine
 const ParserState = enum {
@@ -55,6 +57,7 @@ pub const CSVParser = struct {
     // Error context tracking
     current_row_index: u32,
     current_col_index: u32,
+    header_row: ?[][]const u8, // Cached headers for error messages
 
     /// Initialize CSV parser
     pub fn init(
@@ -97,6 +100,7 @@ pub const CSVParser = struct {
             .rows = .{},
             .current_row_index = 0,
             .current_col_index = 0,
+            .header_row = null, // Will be set during toDataFrame()
         };
 
         // Pre-allocate capacity (temporarily disabled to fix memory leaks - TODO: investigate)
@@ -130,6 +134,23 @@ pub const CSVParser = struct {
         while (self.pos < self.buffer.len) {
             // Check field length limit
             if (self.current_field.items.len >= MAX_FIELD_LENGTH) {
+                const allocator = self.arena.allocator();
+                const col_name = self.getColumnName();
+                const field_preview = self.current_field.items[0..@min(100, self.current_field.items.len)];
+
+                const err_msg = RichError.init(.InvalidFormat, "Field exceeds maximum length")
+                    .withRow(self.current_row_index + 1) // 1-indexed for display
+                    .withColumn(col_name)
+                    .withFieldValue(field_preview)
+                    .withHint("Maximum field size is 1MB. Split data across multiple fields or increase MAX_FIELD_LENGTH.");
+
+                if (err_msg.format(allocator)) |formatted| {
+                    defer allocator.free(formatted);
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Field too large at row {}, column '{s}'", .{ self.current_row_index + 1, col_name });
+                }
+
                 return error.FieldTooLarge;
             }
 
@@ -177,20 +198,27 @@ pub const CSVParser = struct {
 
     /// Handle a single character in the current state
     fn handleChar(self: *CSVParser, char: u8) !CharAction {
-        std.debug.assert(self.pos <= self.buffer.len); // Invariant
-        std.debug.assert(self.current_field.items.len < MAX_FIELD_LENGTH); // Field size check
+        std.debug.assert(self.pos <= self.buffer.len); // Pre-condition #1: Valid position
+        std.debug.assert(self.current_field.items.len < MAX_FIELD_LENGTH); // Pre-condition #2: Field size check
+        std.debug.assert(self.state != .EndOfRecord); // Pre-condition #3: Not at end of record
 
-        return switch (self.state) {
+        const result = switch (self.state) {
             .Start => try self.handleStart(char),
             .InField => try self.handleInField(char),
             .InQuotedField => try self.handleInQuotedField(char),
             .QuoteInQuoted => try self.handleQuoteInQuoted(char),
             .EndOfRecord => unreachable,
         };
+
+        std.debug.assert(result == .Continue or result == .FieldComplete or result == .RowComplete); // Post-condition: Valid action
+        return result;
     }
 
     /// Handle character in Start state
     fn handleStart(self: *CSVParser, char: u8) !CharAction {
+        std.debug.assert(self.state == .Start); // Pre-condition #1: In Start state
+        std.debug.assert(self.current_field.items.len == 0); // Pre-condition #2: Empty field buffer
+
         const allocator = self.arena.allocator();
         if (char == '"') {
             self.state = .InQuotedField;
@@ -209,6 +237,9 @@ pub const CSVParser = struct {
 
     /// Handle character in InField state
     fn handleInField(self: *CSVParser, char: u8) !CharAction {
+        std.debug.assert(self.state == .InField); // Pre-condition #1: In InField state
+        std.debug.assert(self.current_field.items.len < MAX_FIELD_LENGTH); // Pre-condition #2: Below field limit
+
         const allocator = self.arena.allocator();
         if (char == self.opts.delimiter) {
             self.state = .Start;
@@ -225,6 +256,9 @@ pub const CSVParser = struct {
 
     /// Handle character in InQuotedField state
     fn handleInQuotedField(self: *CSVParser, char: u8) !CharAction {
+        std.debug.assert(self.state == .InQuotedField); // Pre-condition #1: In InQuotedField state
+        std.debug.assert(self.current_field.items.len < MAX_FIELD_LENGTH); // Pre-condition #2: Below field limit
+
         const allocator = self.arena.allocator();
         if (char == '"') {
             self.state = .QuoteInQuoted;
@@ -236,6 +270,9 @@ pub const CSVParser = struct {
 
     /// Handle character in QuoteInQuoted state
     fn handleQuoteInQuoted(self: *CSVParser, char: u8) !CharAction {
+        std.debug.assert(self.state == .QuoteInQuoted); // Pre-condition #1: In QuoteInQuoted state
+        std.debug.assert(self.current_field.items.len < MAX_FIELD_LENGTH); // Pre-condition #2: Below field limit
+
         const allocator = self.arena.allocator();
         if (char == '"') {
             // Escaped quote
@@ -259,7 +296,24 @@ pub const CSVParser = struct {
                 self.state = .InField; // Continue as unquoted field
                 return .Continue;
             } else {
-                // Strict mode: throw error
+                // Strict mode: throw error with context
+                const col_name = self.getColumnName();
+                const csv_context = try self.getCSVContext(allocator);
+                defer allocator.free(csv_context);
+
+                const err_msg = RichError.init(.InvalidFormat, "Unclosed or misplaced quote in CSV")
+                    .withRow(self.current_row_index + 1)
+                    .withColumn(col_name)
+                    .withFieldValue(csv_context)
+                    .withHint("Check for unescaped quotes. Use \"\" (double quotes) to escape quotes inside quoted fields.");
+
+                if (err_msg.format(allocator)) |formatted| {
+                    defer allocator.free(formatted);
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Invalid quoting at row {}, column '{s}'", .{ self.current_row_index + 1, col_name });
+                }
+
                 return error.InvalidQuoting;
             }
         }
@@ -274,6 +328,34 @@ pub const CSVParser = struct {
         if (char == '\r' and self.pos < self.buffer.len and self.buffer[self.pos] == '\n') {
             self.pos += 1; // Skip LF in CRLF
         }
+    }
+
+    /// Get column name for error messages
+    fn getColumnName(self: *const CSVParser) []const u8 {
+        std.debug.assert(self.current_col_index < MAX_COLUMNS); // Valid column index
+
+        if (self.header_row) |headers| {
+            if (self.current_col_index < headers.len) {
+                return headers[self.current_col_index];
+            }
+        }
+
+        // Fallback: return column index as string (will be allocated temporarily)
+        return "unknown";
+    }
+
+    /// Extract CSV context around current position for error messages
+    fn getCSVContext(self: *const CSVParser, allocator: std.mem.Allocator) ![]const u8 {
+        std.debug.assert(self.pos <= self.buffer.len); // Valid position
+
+        // Extract up to 50 chars before and after current position
+        const before_start = if (self.pos > 50) self.pos - 50 else 0;
+        const after_end = @min(self.buffer.len, self.pos + 50);
+
+        const context = self.buffer[before_start..after_end];
+
+        // Return a copy to avoid lifetime issues
+        return try allocator.dupe(u8, context);
     }
 
     /// Finish current field and reset buffer
@@ -302,6 +384,22 @@ pub const CSVParser = struct {
             try self.current_row.append(allocator, field);
 
             if (self.current_row.items.len > MAX_COLUMNS) {
+                const col_count: u32 = @intCast(self.current_row.items.len);
+
+                const err_msg = RichError.init(.InvalidFormat, "Too many columns in CSV")
+                    .withRow(self.current_row_index + 1)
+                    .withHint(try std.fmt.allocPrint(allocator,
+                        "Found {} columns, maximum is {}. Check for unescaped delimiters in quoted fields.",
+                        .{ col_count, MAX_COLUMNS }));
+
+                if (err_msg.format(allocator)) |formatted| {
+                    defer allocator.free(formatted);
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Too many columns at row {}: found {}, max {}",
+                        .{ self.current_row_index + 1, col_count, MAX_COLUMNS });
+                }
+
                 return error.TooManyColumns;
             }
         }
@@ -350,6 +448,19 @@ pub const CSVParser = struct {
         if (self.rows.items.len == 0) {
             // In Lenient mode, allow empty CSVs but they must have at least been parsed
             // If there's literally nothing (not even headers), it's an error
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const temp_allocator = arena.allocator();
+
+            const err_msg = RichError.init(.InvalidFormat, "CSV file is empty or contains no parseable data")
+                .withHint("CSV must contain at least a header row. Valid example: \"name,age\\nAlice,30\"");
+
+            if (err_msg.format(temp_allocator)) |formatted| {
+                std.log.err("{s}", .{formatted});
+            } else |_| {
+                std.log.err("CSV file is empty", .{});
+            }
+
             return error.EmptyCSV;
         }
 
@@ -368,10 +479,13 @@ pub const CSVParser = struct {
             break :blk headers;
         };
 
+        // Cache headers for error messages
+        self.header_row = header_row;
+
         const data_start: usize = if (self.opts.has_headers) 1 else 0;
         const data_rows = self.rows.items[data_start..];
 
-        // Infer column types
+        // Infer column types (with optional manual schema override)
         const col_count = header_row.len;
         var column_types = try allocator.alloc(ValueType, col_count);
         defer allocator.free(column_types);
@@ -379,11 +493,30 @@ pub const CSVParser = struct {
         if (data_rows.len > 0 and self.opts.infer_types) {
             const preview_count = @min(self.opts.preview_rows, @as(u32, @intCast(data_rows.len)));
             for (0..col_count) |col_idx| {
+                // Check manual schema first
+                if (self.opts.schema) |schema_map| {
+                    const col_name = header_row[col_idx];
+                    if (schema_map.get(col_name)) |manual_type| {
+                        column_types[col_idx] = manual_type;
+                        continue; // Skip auto-detection for this column
+                    }
+                }
+
+                // Fall back to auto-detection
                 column_types[col_idx] = try inferColumnType(data_rows[0..preview_count], col_idx);
             }
         } else {
-            // Default to String type when no data or inference disabled (0.2.0+)
+            // Check manual schema or default to String
             for (0..col_count) |col_idx| {
+                if (self.opts.schema) |schema_map| {
+                    const col_name = header_row[col_idx];
+                    if (schema_map.get(col_name)) |manual_type| {
+                        column_types[col_idx] = manual_type;
+                        continue;
+                    }
+                }
+
+                // Default to String type when no data or inference disabled (0.2.0+)
                 column_types[col_idx] = .String;
             }
         }
@@ -420,12 +553,36 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
     std.debug.assert(rows.len > 0); // Need data
     std.debug.assert(rows.len <= 10_000); // Preview limit
 
+    // FAST DECIMAL CHECK: Scan ALL rows for decimal indicators before type inference
+    // This prevents inferring Int64 when later rows have decimals (e.g., row 150 has "42.5")
+    var has_decimals = false;
+    var decimal_check_idx: u32 = 0;
+    while (decimal_check_idx < MAX_ROWS and decimal_check_idx < rows.len) : (decimal_check_idx += 1) {
+        const row = rows[decimal_check_idx];
+        if (col_idx >= row.len) continue;
+
+        const field = row[col_idx];
+        if (field.len == 0) continue; // Skip empty
+
+        // Check for decimal indicators (fast string scan, no parsing)
+        if (std.mem.indexOfScalar(u8, field, '.') != null or
+            std.mem.indexOfScalar(u8, field, 'e') != null or
+            std.mem.indexOfScalar(u8, field, 'E') != null)
+        {
+            has_decimals = true;
+            break; // Found decimal, stop scanning
+        }
+    }
+    std.debug.assert(decimal_check_idx <= rows.len); // Scanned rows
+
     var all_int = true;
     var all_float = true;
     var all_bool = true;
     var all_empty = true;
 
-    for (rows) |row| {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
         if (col_idx >= row.len) continue;
 
         const field = row[col_idx];
@@ -433,16 +590,25 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
 
         all_empty = false; // Found non-empty field
 
-        if (!tryParseInt64(field)) all_int = false;
+        // Always check types (optimization: skip Int64 if decimals found since Float64 superset)
+        if (has_decimals) {
+            all_int = false; // Has decimals, cannot be Int64
+        } else {
+            if (!tryParseInt64(field)) all_int = false;
+        }
         if (!tryParseFloat64(field)) all_float = false;
         if (!tryParseBool(field)) all_bool = false;
     }
+    std.debug.assert(row_idx == rows.len); // Processed all rows
 
     // If all fields are empty, default to String
     if (all_empty) return .String;
 
     // Prefer Bool over Int64 (since "1" and "0" parse as both)
     if (all_bool) return .Bool;
+
+    // If decimals detected, prefer Float64 over Int64
+    if (has_decimals and all_float) return .Float64;
 
     // Prefer Int64 over Float64 for pure integers
     if (all_int) return .Int64;
@@ -481,7 +647,9 @@ fn detectCategorical(rows: []const [][]const u8, col_idx: usize) bool {
     var non_empty_count: u32 = 0;
     var unique_count: u32 = 0;
 
-    for (rows) |row| {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
         if (col_idx >= row.len) continue;
 
         const field = row[col_idx];
@@ -495,6 +663,7 @@ fn detectCategorical(rows: []const [][]const u8, col_idx: usize) bool {
             unique_count += 1;
         }
     }
+    std.debug.assert(row_idx == rows.len); // Processed all rows
 
     std.debug.assert(unique_count <= non_empty_count); // Post-condition #3
 
@@ -580,16 +749,40 @@ fn fillInt64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !vo
     std.debug.assert(col.value_type == .Int64); // Pre-condition #1
     const buffer = col.asInt64Buffer() orelse return error.TypeMismatch;
 
-    for (rows, 0..) |row, row_idx| {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
         if (col_idx >= row.len or row[col_idx].len == 0) {
             buffer[row_idx] = 0; // Empty = 0
         } else {
             buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch |err| {
-                std.log.err("Failed to parse Int64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+                // Use a temporary allocator for error message (will be freed after logging)
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const hint = switch (err) {
+                    error.Overflow => "Value exceeds Int64 range (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)",
+                    error.InvalidCharacter => "Expected integer, found non-numeric characters",
+                };
+
+                const err_msg = RichError.init(.TypeMismatch, "Failed to parse integer")
+                    .withRow(@as(u32, @intCast(row_idx)) + 1)
+                    .withColumn(col.name)
+                    .withFieldValue(row[col_idx])
+                    .withHint(hint);
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Failed to parse Int64 at row {}, col '{s}': '{s}'", .{ row_idx + 1, col.name, row[col_idx] });
+                }
+
                 return error.TypeMismatch;
             };
         }
     }
+    std.debug.assert(row_idx == rows.len); // Processed all rows
 
     std.debug.assert(buffer.len >= rows.len); // Post-condition #2
 }
@@ -599,16 +792,39 @@ fn fillFloat64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !
     std.debug.assert(col.value_type == .Float64); // Pre-condition #1
     const buffer = col.asFloat64Buffer() orelse return error.TypeMismatch;
 
-    for (rows, 0..) |row, row_idx| {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
         if (col_idx >= row.len or row[col_idx].len == 0) {
             buffer[row_idx] = 0.0; // Empty = 0.0
         } else {
             buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch |err| {
-                std.log.err("Failed to parse Float64 at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+                // Use a temporary allocator for error message
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const hint = switch (err) {
+                    error.InvalidCharacter => "Expected floating-point number (e.g., 3.14, -2.5, 1e-10)",
+                };
+
+                const err_msg = RichError.init(.TypeMismatch, "Failed to parse floating-point number")
+                    .withRow(@as(u32, @intCast(row_idx)) + 1)
+                    .withColumn(col.name)
+                    .withFieldValue(row[col_idx])
+                    .withHint(hint);
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Failed to parse Float64 at row {}, col '{s}': '{s}'", .{ row_idx + 1, col.name, row[col_idx] });
+                }
+
                 return error.TypeMismatch;
             };
         }
     }
+    std.debug.assert(row_idx == rows.len); // Processed all rows
 
     std.debug.assert(buffer.len >= rows.len); // Post-condition #2
 }
@@ -618,16 +834,35 @@ fn fillBoolColumn(col: *Series, rows: []const [][]const u8, col_idx: usize) !voi
     std.debug.assert(col.value_type == .Bool); // Pre-condition #1
     const buffer = col.asBoolBuffer() orelse return error.TypeMismatch;
 
-    for (rows, 0..) |row, row_idx| {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
         if (col_idx >= row.len or row[col_idx].len == 0) {
             buffer[row_idx] = false; // Empty = false
         } else {
-            buffer[row_idx] = parseBool(row[col_idx]) catch |err| {
-                std.log.err("Failed to parse Bool at row {}, col {}: '{s}' - {}", .{ row_idx, col_idx, row[col_idx], err });
+            buffer[row_idx] = parseBool(row[col_idx]) catch {
+                // Use a temporary allocator for error message
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const temp_allocator = arena.allocator();
+
+                const err_msg = RichError.init(.TypeMismatch, "Failed to parse boolean value")
+                    .withRow(@as(u32, @intCast(row_idx)) + 1)
+                    .withColumn(col.name)
+                    .withFieldValue(row[col_idx])
+                    .withHint("Expected 'true', 'false', '1', '0', 't', 'f', 'yes', 'no', 'y', or 'n' (case-insensitive)");
+
+                if (err_msg.format(temp_allocator)) |formatted| {
+                    std.log.err("{s}", .{formatted});
+                } else |_| {
+                    std.log.err("Failed to parse Bool at row {}, col '{s}': '{s}'", .{ row_idx + 1, col.name, row[col_idx] });
+                }
+
                 return error.TypeMismatch;
             };
         }
     }
+    std.debug.assert(row_idx == rows.len); // Processed all rows
 
     std.debug.assert(buffer.len >= rows.len); // Post-condition #2
 }
@@ -651,13 +886,53 @@ fn fillCategoricalColumn(col: *Series, rows: []const [][]const u8, col_idx: usiz
     std.debug.assert(col.value_type == .Categorical); // Pre-condition #1
     std.debug.assert(rows.len > 0); // Pre-condition #2
 
-    var cat_col = col.asCategoricalColumnMut() orelse return error.TypeMismatch;
+    var cat_col = col.asCategoricalColumnMut() orelse {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const temp_allocator = arena.allocator();
+
+        const err_msg = RichError.init(.TypeMismatch, "Failed to access categorical column")
+            .withColumn(col.name)
+            .withHint("Column type mismatch. Expected Categorical column but got different type.");
+
+        if (err_msg.format(temp_allocator)) |formatted| {
+            std.log.err("{s}", .{formatted});
+        } else |_| {
+            std.log.err("Type mismatch accessing categorical column '{s}'", .{col.name});
+        }
+
+        return error.TypeMismatch;
+    };
 
     var row_idx: u32 = 0;
     while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
         const row = rows[row_idx];
         const field = if (col_idx < row.len) row[col_idx] else "";
-        try cat_col.append(allocator, field);
+
+        cat_col.append(allocator, field) catch |err| {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const temp_allocator = arena.allocator();
+
+            const hint = switch (err) {
+                error.OutOfMemory => "Not enough memory to store categorical values. Consider reducing dataset size or using String type.",
+                else => "Failed to add category to column. Check memory availability.",
+            };
+
+            const err_msg = RichError.init(.TypeMismatch, "Failed to add categorical value")
+                .withRow(@as(u32, @intCast(row_idx)) + 1)
+                .withColumn(col.name)
+                .withFieldValue(field)
+                .withHint(hint);
+
+            if (err_msg.format(temp_allocator)) |formatted| {
+                std.log.err("{s}", .{formatted});
+            } else |_| {
+                std.log.err("Failed to add categorical value at row {}, col '{s}': '{s}'", .{ row_idx + 1, col.name, field });
+            }
+
+            return err;
+        };
     }
 
     std.debug.assert(row_idx == rows.len); // Post-condition #3
@@ -668,7 +943,9 @@ fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []Val
     std.debug.assert(rows.len > 0); // Pre-condition #1
     std.debug.assert(column_types.len == df.columns.len); // Pre-condition #2
 
-    for (df.columns, 0..) |*col, col_idx| {
+    var col_idx: u32 = 0;
+    while (col_idx < MAX_COLUMNS and col_idx < df.columns.len) : (col_idx += 1) {
+        const col = &df.columns[col_idx];
         switch (column_types[col_idx]) {
             .Int64 => try fillInt64Column(col, rows, col_idx),
             .Float64 => try fillFloat64Column(col, rows, col_idx),
@@ -678,6 +955,7 @@ fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []Val
             else => return error.UnsupportedType,
         }
     }
+    std.debug.assert(col_idx == df.columns.len); // Processed all columns
 }
 
 // Tests

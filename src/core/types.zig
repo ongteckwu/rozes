@@ -106,6 +106,21 @@ pub const ColumnDesc = struct {
     }
 };
 
+/// Manual schema specification for CSV columns
+///
+/// Maps column names to their desired ValueType, overriding auto-detection.
+/// Use this to force specific columns to be categorical, or to correct
+/// type inference issues.
+///
+/// Example:
+/// ```zig
+/// var schema = std.StringHashMap(ValueType).init(allocator);
+/// try schema.put("region", .Categorical);
+/// try schema.put("country", .Categorical);
+/// try schema.put("age", .Int64);
+/// ```
+pub const SchemaMap = std.StringHashMap(ValueType);
+
 /// CSV parsing options
 pub const CSVOptions = struct {
     /// Field delimiter (default: ',')
@@ -121,6 +136,7 @@ pub const CSVOptions = struct {
     trim_whitespace: bool = false,
 
     /// Automatically infer column types (default: true)
+    /// Set to false if providing full manual schema
     infer_types: bool = true,
 
     /// Number of rows to preview for type inference (default: 100)
@@ -131,6 +147,12 @@ pub const CSVOptions = struct {
 
     /// Maximum CSV size in bytes (safety limit)
     max_csv_size: u32 = 1024 * 1024 * 1024, // 1GB default (fits in u32)
+
+    /// Manual schema specification (optional)
+    /// If provided, overrides auto-detection for specified columns.
+    /// Columns not in schema will still use auto-detection (if infer_types = true).
+    /// Set to null to rely entirely on auto-detection (default: null)
+    schema: ?*const SchemaMap = null,
 
     /// Validates options are reasonable
     pub fn validate(self: CSVOptions) !void {
@@ -144,6 +166,16 @@ pub const CSVOptions = struct {
         std.debug.assert(self.preview_rows > 0); // Must preview at least 1 row
         std.debug.assert(self.preview_rows <= 10_000); // Reasonable preview limit
         std.debug.assert(self.max_csv_size > 0); // Must allow some data
+
+        // Validate schema if provided
+        if (self.schema) |schema_map| {
+            std.debug.assert(schema_map.count() <= 10_000); // Reasonable column limit
+
+            // Schema must have at least one column
+            if (schema_map.count() == 0) return error.EmptySchema;
+
+            // All schema entries must have valid ValueType (checked by type system)
+        }
     }
 };
 
@@ -208,7 +240,7 @@ pub const RichError = struct {
 
     pub fn init(code: ErrorCode, message: []const u8) RichError {
         std.debug.assert(message.len > 0); // Message required
-        std.debug.assert(@intFromEnum(code) >= 0); // Valid error code
+        std.debug.assert(@intFromEnum(code) < 0); // Must be an error code (negative)
 
         return RichError{
             .code = code,
@@ -255,41 +287,41 @@ pub const RichError = struct {
     /// Format error as detailed message
     pub fn format(self: *const RichError, allocator: std.mem.Allocator) ![]const u8 {
         std.debug.assert(self.message.len > 0); // Valid message
-        std.debug.assert(@intFromEnum(self.code) >= 0); // Valid code
+        std.debug.assert(@intFromEnum(self.code) < 0); // Must be error code (negative)
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer = std.ArrayListUnmanaged(u8){};
+        defer buffer.deinit(allocator);
 
         // Main error message
-        try buffer.writer().print("RozesError: {s}", .{self.message});
+        try buffer.writer(allocator).print("RozesError: {s}", .{self.message});
 
         // Add location context
         if (self.row_number) |row| {
-            try buffer.writer().print(" at row {}", .{row});
+            try buffer.writer(allocator).print(" at row {}", .{row});
         }
 
         if (self.column_name) |col_name| {
-            try buffer.writer().print(" in column '{s}'", .{col_name});
+            try buffer.writer(allocator).print(" in column '{s}'", .{col_name});
         }
 
-        try buffer.append('\n');
+        try buffer.append(allocator, '\n');
 
         // Add field value if available
         if (self.field_value) |value| {
             const truncated = if (value.len > 100) value[0..100] else value;
-            try buffer.writer().print("  Field value: \"{s}\"", .{truncated});
+            try buffer.writer(allocator).print("  Field value: \"{s}\"", .{truncated});
             if (value.len > 100) {
-                try buffer.appendSlice("...");
+                try buffer.appendSlice(allocator, "...");
             }
-            try buffer.append('\n');
+            try buffer.append(allocator, '\n');
         }
 
         // Add hint if available
         if (self.hint) |hint_text| {
-            try buffer.writer().print("  Hint: {s}\n", .{hint_text});
+            try buffer.writer(allocator).print("  Hint: {s}\n", .{hint_text});
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 

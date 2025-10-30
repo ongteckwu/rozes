@@ -84,8 +84,7 @@ pub const CategoricalColumn = struct {
     /// - capacity > 0
     /// - capacity ≤ MAX_ROWS
     pub fn init(allocator: Allocator, capacity: u32) !CategoricalColumn {
-        std.debug.assert(capacity > 0); // Pre-condition #1
-        std.debug.assert(capacity <= MAX_ROWS); // Pre-condition #2
+        std.debug.assert(capacity <= MAX_ROWS); // Pre-condition (0 is valid for empty DataFrame)
 
         const codes = try allocator.alloc(u32, capacity);
         errdefer allocator.free(codes);
@@ -145,17 +144,20 @@ pub const CategoricalColumn = struct {
     /// Otherwise, adds it as a new category.
     ///
     /// ## Assertions
-    /// - value.len > 0 (non-empty strings only)
     /// - self.count < self.capacity (space available)
+    /// - self.codes.len >= self.capacity (codes array valid)
     /// - self.categories.items.len < MAX_CATEGORIES (category limit)
     ///
     /// ## Error Conditions
     /// - error.CategoricalFull: Too many categories (>1M unique values)
     /// - error.ColumnFull: Column at capacity (need to grow first)
     /// - error.OutOfMemory: Allocation failed
+    ///
+    /// ## Special Handling
+    /// - Empty strings are allowed (stored as empty category)
     pub fn append(self: *CategoricalColumn, allocator: Allocator, value: []const u8) !void {
-        std.debug.assert(value.len > 0); // Pre-condition #1: Non-empty value
-        std.debug.assert(self.count < self.capacity); // Pre-condition #2: Space available
+        std.debug.assert(self.count < self.capacity); // Pre-condition: Space available
+        std.debug.assert(self.codes.len >= self.capacity); // Pre-condition: Codes array valid
 
         // Check if category already exists
         if (self.category_map.get(value)) |code| {
@@ -246,5 +248,48 @@ pub const CategoricalColumn = struct {
 
         std.debug.assert(ratio >= 0.0 and ratio <= 1.0); // Post-condition
         return ratio;
+    }
+
+    /// Create a deep copy of the categorical column by rebuilding the dictionary
+    ///
+    /// This is used when filtering/selecting rows to ensure the new DataFrame
+    /// has an independent categorical column that doesn't share the dictionary
+    /// with the original.
+    ///
+    /// ## Performance
+    /// - Time: O(n) where n = number of rows to copy
+    /// - Space: O(unique categories in subset)
+    ///
+    /// ## Assertions
+    /// - row_indices.len > 0 (need at least one row)
+    /// - row_indices.len <= MAX_ROWS
+    /// - All indices within bounds
+    pub fn deepCopyRows(
+        self: *const CategoricalColumn,
+        allocator: Allocator,
+        row_indices: []const u32,
+    ) !CategoricalColumn {
+        std.debug.assert(row_indices.len > 0); // Pre-condition #1
+        std.debug.assert(row_indices.len <= MAX_ROWS); // Pre-condition #2
+
+        // Create new categorical column with estimated capacity
+        var new_col = try CategoricalColumn.init(allocator, @intCast(row_indices.len));
+        errdefer new_col.deinit(allocator);
+
+        // Rebuild dictionary by appending each string value
+        // This automatically deduplicates and builds a new category mapping
+        var i: u32 = 0;
+        while (i < MAX_ROWS and i < row_indices.len) : (i += 1) {
+            const row_idx = row_indices[i];
+            std.debug.assert(row_idx < self.count); // Bounds check
+
+            const str = self.get(row_idx);
+            try new_col.append(allocator, str);
+        }
+
+        std.debug.assert(i == row_indices.len); // Post-condition: Copied all rows
+        std.debug.assert(new_col.count == row_indices.len); // Same row count
+
+        return new_col;
     }
 };

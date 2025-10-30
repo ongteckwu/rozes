@@ -152,18 +152,20 @@ test "CategoricalColumn.cardinality detects high cardinality" {
 }
 
 // Test 8: Empty string handling
-test "CategoricalColumn.append rejects empty strings" {
+test "CategoricalColumn.append handles empty strings" {
     const allocator = testing.allocator;
 
     var cat = try CategoricalColumn.init(allocator, 10);
     defer cat.deinit(allocator);
 
-    // Empty strings should fail assertion
-    // (We can't test assertions in release builds, but this documents behavior)
-
-    // Add valid value
+    // Empty strings are now allowed (CSV files can have empty fields)
     try cat.append(allocator, "Valid");
-    try testing.expectEqual(@as(u32, 1), cat.count);
+    try cat.append(allocator, "");
+    try cat.append(allocator, "Another");
+
+    try testing.expectEqual(@as(u32, 3), cat.count);
+    try testing.expectEqual(@as(u32, 3), cat.categoryCount()); // 3 unique values
+    try testing.expectEqualStrings("", cat.get(1)); // Empty string at index 1
 }
 
 // Test 9: Single unique category
@@ -649,4 +651,261 @@ test "CategoricalColumn append performance: HashMap lookup overhead" {
 
     // Should complete in <100ms (expect ~10-20ms on modern hardware)
     try testing.expect(duration_ms < 100.0);
+}
+
+// ============================================================================
+// Deep Copy Tests (Day 8 - Phase 4)
+// ============================================================================
+
+// Test: Basic deep copy with subset of rows
+test "CategoricalColumn.deepCopyRows creates independent copy" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "East");
+    try cat.append(allocator, "West");
+    try cat.append(allocator, "East");
+    try cat.append(allocator, "South");
+    try cat.append(allocator, "East");
+
+    // Copy rows 0, 2, 4 (all "East")
+    const indices = [_]u32{ 0, 2, 4 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    // Verify copy has correct data
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqual(@as(u32, 1), copy.categoryCount()); // Only "East"
+    try testing.expectEqualStrings("East", copy.get(0));
+    try testing.expectEqualStrings("East", copy.get(1));
+    try testing.expectEqualStrings("East", copy.get(2));
+
+    // Verify original is unchanged
+    try testing.expectEqual(@as(u32, 5), cat.count);
+    try testing.expectEqual(@as(u32, 3), cat.categoryCount()); // East, West, South
+}
+
+// Test: Deep copy preserves all categories present in subset
+test "CategoricalColumn.deepCopyRows preserves multiple categories" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "North");
+    try cat.append(allocator, "South");
+    try cat.append(allocator, "East");
+    try cat.append(allocator, "West");
+    try cat.append(allocator, "North");
+    try cat.append(allocator, "South");
+
+    // Copy rows 1, 3, 5 (South, West, South)
+    const indices = [_]u32{ 1, 3, 5 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqual(@as(u32, 2), copy.categoryCount()); // South, West
+    try testing.expectEqualStrings("South", copy.get(0));
+    try testing.expectEqualStrings("West", copy.get(1));
+    try testing.expectEqualStrings("South", copy.get(2));
+}
+
+// Test: Deep copy with single row
+test "CategoricalColumn.deepCopyRows handles single row" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "East");
+    try cat.append(allocator, "West");
+    try cat.append(allocator, "South");
+
+    // Copy only row 1 ("West")
+    const indices = [_]u32{1};
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 1), copy.count);
+    try testing.expectEqual(@as(u32, 1), copy.categoryCount());
+    try testing.expectEqualStrings("West", copy.get(0));
+}
+
+// Test: Deep copy with all rows (full copy)
+test "CategoricalColumn.deepCopyRows can copy all rows" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "A");
+    try cat.append(allocator, "B");
+    try cat.append(allocator, "A");
+
+    const indices = [_]u32{ 0, 1, 2 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqual(@as(u32, 2), copy.categoryCount());
+    try testing.expectEqualStrings("A", copy.get(0));
+    try testing.expectEqualStrings("B", copy.get(1));
+    try testing.expectEqualStrings("A", copy.get(2));
+}
+
+// Test: Deep copy rebuilds dictionary with new codes
+test "CategoricalColumn.deepCopyRows rebuilds dictionary independently" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "First"); // code 0
+    try cat.append(allocator, "Second"); // code 1
+    try cat.append(allocator, "Third"); // code 2
+    try cat.append(allocator, "Second"); // code 1
+    try cat.append(allocator, "Third"); // code 2
+
+    // Copy rows 1, 3, 4 (Second, Second, Third)
+    const indices = [_]u32{ 1, 3, 4 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    // Copy should have new dictionary: "Second" = code 0, "Third" = code 1
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqual(@as(u32, 2), copy.categoryCount());
+
+    // Verify codes are rebuilt (not same as original)
+    try testing.expectEqual(@as(u32, 0), copy.codes[0]); // "Second" is first in new dict
+    try testing.expectEqual(@as(u32, 0), copy.codes[1]); // "Second" again
+    try testing.expectEqual(@as(u32, 1), copy.codes[2]); // "Third" is second in new dict
+
+    // Original codes should be different
+    try testing.expectEqual(@as(u32, 1), cat.codes[1]); // "Second" was code 1 originally
+}
+
+// Test: Deep copy with duplicate indices (same row multiple times)
+test "CategoricalColumn.deepCopyRows handles duplicate indices" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "X");
+    try cat.append(allocator, "Y");
+
+    // Copy row 0 three times
+    const indices = [_]u32{ 0, 0, 0 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqual(@as(u32, 1), copy.categoryCount());
+    try testing.expectEqualStrings("X", copy.get(0));
+    try testing.expectEqualStrings("X", copy.get(1));
+    try testing.expectEqualStrings("X", copy.get(2));
+}
+
+// Test: Deep copy with non-sequential indices
+test "CategoricalColumn.deepCopyRows handles non-sequential indices" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "A");
+    try cat.append(allocator, "B");
+    try cat.append(allocator, "C");
+    try cat.append(allocator, "D");
+    try cat.append(allocator, "E");
+
+    // Copy in reverse order: 4, 2, 0
+    const indices = [_]u32{ 4, 2, 0 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 3), copy.count);
+    try testing.expectEqualStrings("E", copy.get(0));
+    try testing.expectEqualStrings("C", copy.get(1));
+    try testing.expectEqualStrings("A", copy.get(2));
+}
+
+// Test: Deep copy with large dataset (stress test)
+test "CategoricalColumn.deepCopyRows handles large dataset" {
+    const allocator = testing.allocator;
+
+    const row_count: u32 = 1000;
+    var cat = try CategoricalColumn.init(allocator, row_count);
+    defer cat.deinit(allocator);
+
+    // Create 5 categories, repeated
+    const categories = [_][]const u8{ "Cat1", "Cat2", "Cat3", "Cat4", "Cat5" };
+    var i: u32 = 0;
+    while (i < row_count) : (i += 1) {
+        try cat.append(allocator, categories[i % 5]);
+    }
+
+    // Copy every 10th row (100 rows total)
+    var indices = try allocator.alloc(u32, 100);
+    defer allocator.free(indices);
+    i = 0;
+    while (i < 100) : (i += 1) {
+        indices[i] = i * 10;
+    }
+
+    var copy = try cat.deepCopyRows(allocator, indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 100), copy.count);
+    try testing.expectEqual(@as(u32, 5), copy.categoryCount());
+
+    // Verify a few values
+    try testing.expectEqualStrings("Cat1", copy.get(0)); // row 0 → Cat1
+    try testing.expectEqualStrings("Cat1", copy.get(1)); // row 10 → Cat1
+    try testing.expectEqualStrings("Cat2", copy.get(2)); // row 20 → Cat2
+}
+
+// Test: Deep copy memory leak test
+test "CategoricalColumn.deepCopyRows has no memory leaks" {
+    const allocator = testing.allocator;
+
+    var iter: u32 = 0;
+    while (iter < 1000) : (iter += 1) {
+        var cat = try CategoricalColumn.init(allocator, 10);
+        defer cat.deinit(allocator);
+
+        try cat.append(allocator, "East");
+        try cat.append(allocator, "West");
+        try cat.append(allocator, "South");
+
+        const indices = [_]u32{ 0, 2 };
+        var copy = try cat.deepCopyRows(allocator, &indices);
+        copy.deinit(allocator);
+    }
+
+    // testing.allocator will report leaks automatically
+}
+
+// Test: Deep copy preserves empty strings
+test "CategoricalColumn.deepCopyRows handles empty strings" {
+    const allocator = testing.allocator;
+
+    var cat = try CategoricalColumn.init(allocator, 10);
+    defer cat.deinit(allocator);
+
+    try cat.append(allocator, "");
+    try cat.append(allocator, "NotEmpty");
+    try cat.append(allocator, "");
+
+    const indices = [_]u32{ 0, 2 };
+    var copy = try cat.deepCopyRows(allocator, &indices);
+    defer copy.deinit(allocator);
+
+    try testing.expectEqual(@as(u32, 2), copy.count);
+    try testing.expectEqual(@as(u32, 1), copy.categoryCount());
+    try testing.expectEqualStrings("", copy.get(0));
+    try testing.expectEqualStrings("", copy.get(1));
 }

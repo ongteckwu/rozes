@@ -51,6 +51,12 @@ pub const operations = @import("core/operations.zig");
 pub const csv = @import("csv/parser.zig");
 pub const CSVParser = csv.CSVParser;
 
+// JSON parsing
+pub const json = @import("json/parser.zig");
+pub const JSONParser = json.JSONParser;
+pub const JSONFormat = json.JSONFormat;
+pub const JSONOptions = json.JSONOptions;
+
 // SIMD utilities
 pub const simd = @import("core/simd.zig");
 
@@ -74,6 +80,7 @@ test {
     _ = @import("core/simd.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
+    _ = @import("json/parser.zig");
 
     // Include dedicated test files
     _ = @import("test/unit/core/sort_test.zig");
@@ -85,6 +92,13 @@ test {
     _ = @import("test/unit/core/operations_test.zig");
     _ = @import("test/unit/core/dataframe_test.zig");
     _ = @import("test/unit/core/series_test.zig");
+
+    // JSON parser tests (added 2025-10-30, Phase 1: NDJSON)
+    _ = @import("test/unit/json/parser_test.zig");
+    _ = @import("test/unit/json/parser_edge_cases_test.zig"); // Edge case tests (added 2025-10-30)
+
+    // Stats module edge case tests (added 2025-10-30)
+    _ = @import("test/unit/core/stats_edge_cases_test.zig");
 
     // NOTE: conformance_test.zig uses @embedFile which requires testdata/ to be
     // inside src/ or configured in build.zig. This is pending proper configuration.
