@@ -60,6 +60,36 @@ pub fn build(b: *std.Build) void {
     const benchmark_step = b.step("benchmark", "Run performance benchmarks");
     benchmark_step.dependOn(&run_benchmark.step);
 
+    // Profile join phases executable
+    const profile_join = b.addExecutable(.{
+        .name = "profile-join",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/profiling_tools/profile_join_phases.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    profile_join.root_module.addImport("rozes", rozes_mod);
+
+    const run_profile_join = b.addRunArtifact(profile_join);
+    const profile_join_step = b.step("profile-join", "Profile join operation phases");
+    profile_join_step.dependOn(&run_profile_join.step);
+
+    // Benchmark join executable
+    const benchmark_join = b.addExecutable(.{
+        .name = "benchmark-join",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/profiling_tools/benchmark_join.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    benchmark_join.root_module.addImport("rozes", rozes_mod);
+
+    const run_benchmark_join = b.addRunArtifact(benchmark_join);
+    const benchmark_join_step = b.step("benchmark-join", "Benchmark join performance");
+    benchmark_join_step.dependOn(&run_benchmark_join.step);
+
     // Wasm build for browser
     // Using wasi instead of freestanding to get POSIX-like APIs (needed for ArenaAllocator)
     const wasm_target = b.resolveTargetQuery(.{

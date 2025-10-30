@@ -52,6 +52,19 @@ pub const MeltOptions = reshape.MeltOptions;
 pub const StackOptions = reshape.StackOptions;
 pub const UnstackOptions = reshape.UnstackOptions;
 
+pub const combine = @import("core/combine.zig");
+pub const ConcatOptions = combine.ConcatOptions;
+pub const ConcatAxis = combine.ConcatAxis;
+pub const MergeOptions = combine.MergeOptions;
+pub const MergeHow = combine.MergeHow;
+pub const AppendOptions = combine.AppendOptions;
+pub const UpdateOptions = combine.UpdateOptions;
+
+// Functional operations
+pub const functional = @import("core/functional.zig");
+pub const ApplyOptions = functional.ApplyOptions;
+pub const ApplyAxis = functional.ApplyAxis;
+
 // CSV parsing
 pub const csv = @import("csv/parser.zig");
 pub const CSVParser = csv.CSVParser;
@@ -84,6 +97,8 @@ test {
     _ = @import("core/sort.zig");
     _ = @import("core/simd.zig");
     _ = @import("core/reshape.zig");
+    _ = @import("core/combine.zig");
+    _ = @import("core/functional.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
     _ = @import("json/parser.zig");
@@ -94,6 +109,9 @@ test {
     _ = @import("test/unit/core/join_test.zig");
     _ = @import("test/unit/core/additional_ops_test.zig");
     _ = @import("test/unit/core/reshape_test.zig");
+    _ = @import("test/unit/core/combine_test.zig");
+    _ = @import("test/unit/core/append_update_test.zig");
+    _ = @import("test/unit/core/functional_test.zig");
 
     // New comprehensive test files (added 2025-10-28)
     _ = @import("test/unit/core/operations_test.zig");

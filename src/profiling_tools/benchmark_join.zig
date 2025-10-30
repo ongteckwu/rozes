@@ -1,7 +1,8 @@
 const std = @import("std");
-const DataFrame = @import("src/core/dataframe.zig").DataFrame;
-const join_mod = @import("src/core/join.zig");
-const ColumnDesc = @import("src/core/types.zig").ColumnDesc;
+const rozes = @import("rozes");
+const DataFrame = rozes.DataFrame;
+const ColumnDesc = rozes.ColumnDesc;
+const join_mod = rozes;
 
 /// Benchmark join performance with column-wise memcpy optimization
 ///
@@ -84,7 +85,7 @@ fn benchmarkJoin(allocator: std.mem.Allocator, row_count: u32, label: []const u8
     const join_cols = [_][]const u8{"id"};
 
     const start = std.time.nanoTimestamp();
-    var result = try join_mod.innerJoin(&left, &right, allocator, &join_cols);
+    var result = try left.innerJoin(allocator, &right, &join_cols);
     const end = std.time.nanoTimestamp();
     defer result.deinit();
 

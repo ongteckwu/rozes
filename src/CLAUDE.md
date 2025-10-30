@@ -1121,6 +1121,227 @@ std.debug.assert(col_idx == df.columns.len or col_idx == MAX_COLS); // ✅ Outer
 
 ---
 
+### Learning #14: Inconsistent NaN Handling is a Production Killer 🔥
+
+**Discovery** (0.6.0 Review): Pivot rejects NaN in source data but fills missing combinations with 0.0.
+
+**Problem**: Real sensor/financial data contains NaN (0/0, sensor failures, data import errors). Inconsistent handling causes:
+- Production crashes when users pivot sensor data
+- Silent data loss (0.0 vs NaN are semantically different)
+- Non-compliance with IEEE 754 null semantics
+
+**Root Cause**: Fear of NaN propagation vs need for explicit missing values.
+
+**Solution**: Use IEEE 754 NaN consistently, check before aggregation:
+
+```zig
+// ✅ CORRECT - Accept NaN, warn user, handle in aggregation
+fn getNumericValueAtRow(series: *const Series, row_idx: u32) !f64 {
+    const result = switch (series.value_type) {
+        .Float64 => series.data.Float64[row_idx],
+        // ...
+    };
+
+    // Accept NaN but warn (data integrity audit trail)
+    if (std.math.isNan(result)) {
+        std.log.warn("NaN detected at row {} - will be excluded from aggregation", .{row_idx});
+        // ✅ Return NaN, let caller decide how to handle
+    }
+
+    return result;
+}
+
+// Aggregation: Skip NaN values explicitly
+pub fn getAggregate(self: *const PivotCell, func: AggFunc) f64 {
+    // If all values were NaN, count=0, return NaN
+    if (self.count == 0) return std.math.nan(f64);
+
+    const result = switch (func) {
+        .Sum => self.sum, // Sum already excludes NaN (addValue checks)
+        .Mean => self.sum / @as(f64, @floatFromInt(self.count)),
+        // ...
+    };
+
+    std.debug.assert(!std.math.isNan(result) or self.count == 0); // Post-condition
+    return result;
+}
+
+// Missing combinations: Use NaN, not 0.0
+const value = if (result.cells.get(cell_hash)) |cell|
+    cell.getAggregate(aggfunc)
+else
+    std.math.nan(f64); // ✅ Explicit missing value marker
+```
+
+**Where to Check NaN**:
+- ✅ Comparisons (sort, min, max) - use `std.math.isNan()` before `std.math.order()`
+- ✅ Aggregations (sum, mean) - skip NaN in accumulation
+- ✅ Type inference - detect Float64 even with NaN present
+- ✅ Export - handle NaN → "NaN" string in CSV
+
+**Impact**: 0.6.0 pivot works with real sensor data, no production crashes.
+
+---
+
+### Learning #15: Overflow Checks Before Cast, Not After 🔥
+
+**Discovery** (0.6.0 Review): Melt calculates `result_row_count = df.row_count * melt_columns.len` then checks overflow.
+
+**Problem**: Multiplication overflows u32 silently → wraps to small number → checks pass → OOM crash.
+
+**Pattern**: Check overflow BEFORE arithmetic operations:
+
+```zig
+// ❌ WRONG - Check after overflow already happened
+const result_row_count: u32 = df.row_count * @as(u32, @intCast(melt_columns.len));
+if (result_row_count > MAX_INDEX_VALUES) { // Too late!
+    return error.MeltResultTooLarge;
+}
+
+// ✅ CORRECT - Check before multiplication using wider type
+const melt_col_count: u64 = melt_columns.len;
+const row_count_u64: u64 = df.row_count;
+const result_row_count_u64 = row_count_u64 * melt_col_count;
+
+if (result_row_count_u64 > MAX_INDEX_VALUES) {
+    std.log.err("Melt would create {} rows (max {})", .{result_row_count_u64, MAX_INDEX_VALUES});
+    return error.MeltResultTooLarge;
+}
+
+const result_row_count: u32 = @intCast(result_row_count_u64);
+```
+
+**Common Overflow Scenarios**:
+- DataFrame operations: `row_count * col_count` (reshape, transpose)
+- Cartesian products: `left_rows * right_rows` (cross join)
+- Aggregations: `sum += huge_value` (check for inf)
+- Index calculations: `start_idx + offset` (bounds check first)
+
+**Impact**: User melts 100K × 1000 → 100M rows overflows to 5K → allocate 5K → immediate OOM when filling data.
+
+---
+
+### Learning #16: Performance Documentation is Data Integrity 🔥
+
+**Discovery** (0.6.0 Review): Reshape operations lack O(n) complexity and memory requirements documentation.
+
+**Problem**: Users call expensive operations on large datasets without understanding cost:
+- Pivot 10M rows × 10K unique values → 5 minute hang → browser kill
+- Transpose 1M × 1M → 1TB memory allocation → OOM
+- No warning, no sampling option, no escape hatch
+
+**Data Processing Reality**: DataFrame users need to understand:
+- Computational complexity (O(n), O(n²), O(n × m))
+- Memory requirements (O(1), O(n), O(n × m))
+- Typical performance (100K rows → X seconds)
+- When to sample/filter first
+
+**Solution**: Add performance notes to ALL DataFrame operations:
+
+```zig
+/// Transform DataFrame from long format to wide format (pivot table)
+///
+/// **Performance**:
+/// - Time Complexity: O(n × m) where n = rows, m = unique pivot values
+/// - Space Complexity: O(i × c) where i = unique index values, c = unique column values
+/// - Typical: 100K rows × 100 unique values → ~500ms
+/// - Worst Case: 1M rows × 1K unique values → ~50 seconds
+///
+/// **Warning**: Avoid pivoting high-cardinality columns (>1000 unique values).
+/// Result DataFrame size = (unique index values) × (unique column values).
+///
+/// **Optimization Tips**:
+/// 1. Pre-filter data to reduce row count before pivoting
+/// 2. Use Categorical type for low-cardinality pivot columns (10× faster)
+/// 3. Consider sampling for exploratory analysis (previewRows option)
+/// 4. For >10K unique values, use aggregation without pivoting
+///
+/// Example:
+/// ```zig
+/// // Fast: 100K rows, 50 regions → 2K result rows
+/// const pivoted = try df.pivot(allocator, .{
+///     .index = "date",
+///     .columns = "region",  // 50 unique values
+///     .values = "sales",
+///     .aggfunc = .sum,
+/// });
+///
+/// // Slow: 100K rows, 10K products → 100K result rows (no aggregation!)
+/// const bad_pivot = try df.pivot(allocator, .{
+///     .index = "date",
+///     .columns = "product_id",  // ⚠️ 10K unique values!
+///     .values = "sales",
+/// });
+/// ```
+pub fn pivot(...) !DataFrame {
+```
+
+**Impact**: Users avoid expensive operations, or pre-filter/sample data first → no production hangs.
+
+---
+
+### Learning #17: Shallow Copy Requires Lifetime Documentation 🔥
+
+**Discovery** (0.6.0 Review): Categorical columns use shallow copy (shared dictionary) but lifetime contract isn't documented.
+
+**Problem**: User code frees source DataFrame before using join result → use-after-free:
+
+```zig
+// ❌ DANGEROUS - Source freed before result used
+const joined = try left.innerJoin(allocator, &temp_right, &[_][]const u8{"id"});
+temp_right.deinit(); // ☠️ FREED - Categorical dictionary now dangling pointer!
+
+const cat_col = joined.column("category_right").?; // ☠️ USE-AFTER-FREE
+```
+
+**Tiger Style Requirement**: All lifetime contracts MUST be documented in public API.
+
+**Solution**: Document in function header with safe pattern:
+
+```zig
+/// Performs inner join between two DataFrames
+///
+/// **IMPORTANT - Lifetime Requirement**:
+/// Source DataFrames (`left` and `right`) MUST outlive the returned DataFrame
+/// when using Categorical columns. This is because Categorical columns use
+/// shallow copy (shared dictionary) for performance (80-90% faster joins).
+///
+/// **Why**: Categorical columns store a pointer to the category dictionary.
+/// Freeing source DataFrames invalidates these pointers → use-after-free.
+///
+/// **Safe Pattern**:
+/// ```zig
+/// var left = try loadData("left.csv");
+/// var right = try loadData("right.csv");
+/// var joined = try left.innerJoin(allocator, &right, &[_][]const u8{"id"});
+///
+/// // Use joined...
+///
+/// // ✅ CORRECT ORDER: Free result BEFORE sources
+/// joined.deinit();
+/// right.deinit(); // ✅ Free after result
+/// left.deinit();  // ✅ Free after result
+/// ```
+///
+/// **Unsafe Pattern**:
+/// ```zig
+/// var temp = try loadData("temp.csv");
+/// var joined = try left.innerJoin(allocator, &temp, &[_][]const u8{"id"});
+/// temp.deinit(); // ❌ DANGER - Use-after-free if joined has Categorical columns!
+/// ```
+///
+/// **Performance vs Safety**:
+/// - Shallow copy: 80-90% faster joins (740ms → 100ms for 10K×10K)
+/// - Deep copy: 100% safe but slower (use if source lifetime uncertain)
+///
+/// See: `src/core/categorical.zig` for shallow vs deep copy details
+pub fn innerJoin(...) !DataFrame {
+```
+
+**Impact**: Users write safe code, avoid intermittent segfaults.
+
+---
+
 ## Source Organization
 
 ### Directory Structure
