@@ -1,0 +1,58 @@
+{
+  "name": "rozes",
+  "version": "1.0.0",
+  "description": "High-performance DataFrame library powered by WebAssembly - 3-10× faster than Papa Parse",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "zig-out/bin/rozes.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "zig build",
+    "build:wasm": "zig build -Doptimize=ReleaseSmall",
+    "test": "zig build test",
+    "test:node": "node examples/node/basic.js",
+    "benchmark": "zig build benchmark",
+    "benchmark:js": "node src/test/benchmark/compare_js.js"
+  },
+  "keywords": [
+    "dataframe",
+    "csv",
+    "wasm",
+    "webassembly",
+    "data-analysis",
+    "pandas",
+    "polars",
+    "high-performance",
+    "zig"
+  ],
+  "author": "Rozes Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/rozes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/rozes/issues"
+  },
+  "homepage": "https://github.com/yourusername/rozes#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {
+    "papaparse": "^5.4.1",
+    "csv-parse": "^5.5.6"
+  },
+  "dependencies": {}
+}

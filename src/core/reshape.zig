@@ -322,6 +322,9 @@ fn collectPivotKeys(
     var column_map = std.StringHashMap(u32).init(result.allocator);
     defer column_map.deinit();
 
+    // Pre-allocate common buffer for numeric-to-string conversions
+    var string_buf: [32]u8 = undefined;
+
     // Iterate through rows
     var row_idx: u32 = 0;
     while (row_idx < df.row_count and row_idx < MAX_INDEX_VALUES) : (row_idx += 1) {
@@ -339,12 +342,18 @@ fn collectPivotKeys(
             }
         }
 
-        // Get column key (must be string-convertible)
-        const col_key_owned = try getColumnKeyAtRow(pivot_col, row_idx, result.allocator);
+        // Get column key (as temporary string, no allocation yet)
+        const col_key_temp = try getColumnKeyAtRowFast(pivot_col, row_idx, &string_buf);
 
         // Track unique column values, and get the canonical key for hashing
         const col_key_for_hash: []const u8 = blk: {
-            if (!column_map.contains(col_key_owned)) {
+            // Check if already exists BEFORE allocating
+            if (column_map.get(col_key_temp)) |key_idx| {
+                // Already exists, use stored key (no allocation needed!)
+                break :blk result.column_keys.items[key_idx];
+            } else {
+                // New key - allocate permanent copy
+                const col_key_owned = try result.allocator.dupe(u8, col_key_temp);
                 try column_map.put(col_key_owned, @intCast(result.column_keys.items.len));
                 try result.column_keys.append(result.allocator, col_key_owned);
 
@@ -352,11 +361,6 @@ fn collectPivotKeys(
                     return error.TooManyPivotColumns;
                 }
                 break :blk col_key_owned;
-            } else {
-                // Column key already exists, free the duplicate and use stored key
-                defer result.allocator.free(col_key_owned);
-                const key_idx = column_map.get(col_key_owned).?;
-                break :blk result.column_keys.items[key_idx];
             }
         };
 
@@ -392,7 +396,31 @@ fn getIndexKeyAtRow(series: *const Series, row_idx: u32) !IndexKey {
     };
 }
 
-/// Get column key (as string) from series at row
+/// Get column key (as temporary string, no allocation) - OPTIMIZED VERSION
+/// Uses caller-provided buffer for numeric conversions to avoid allocations
+fn getColumnKeyAtRowFast(series: *const Series, row_idx: u32, buf: []u8) ![]const u8 {
+    std.debug.assert(row_idx < series.length); // Pre-condition #1
+    std.debug.assert(series.length > 0); // Pre-condition #2
+
+    return switch (series.value_type) {
+        .Int64 => blk: {
+            const val = series.data.Int64[row_idx];
+            const str = try std.fmt.bufPrint(buf, "{}", .{val});
+            break :blk str;
+        },
+        .Float64 => blk: {
+            const val = series.data.Float64[row_idx];
+            const str = try std.fmt.bufPrint(buf, "{d}", .{val});
+            break :blk str;
+        },
+        .Bool => if (series.data.Bool[row_idx]) "true" else "false",
+        .String => series.data.String.get(row_idx),
+        .Categorical => series.data.Categorical.get(row_idx),
+        .Null => "null",
+    };
+}
+
+/// Get column key (as string) from series at row - LEGACY VERSION (kept for compatibility)
 fn getColumnKeyAtRow(series: *const Series, row_idx: u32, allocator: std.mem.Allocator) ![]const u8 {
     std.debug.assert(row_idx < series.length); // Pre-condition #1
     std.debug.assert(series.length > 0); // Pre-condition #2

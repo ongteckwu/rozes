@@ -20,6 +20,34 @@ Rozes is a DataFrame library written in Zig that provides:
 
 ---
 
+## ⚠️ CRITICAL: Milestone Documentation Updates
+
+**At EVERY milestone completion (0.1.0, 0.2.0, 1.0.0, 1.1.0, etc.), you MUST update:**
+
+1. **docs/CHANGELOG.md**: Add new section with version number, date, and complete list of changes
+   - **Format**: Point form (bullet points), NOT paragraphs
+   - Keep it concise and scannable
+2. **README.md**: Update version numbers, test counts, performance benchmarks, and feature lists
+
+**Why this is critical:**
+- Users rely on CHANGELOG.md for migration and version history
+- README.md is the first impression - outdated stats hurt credibility
+- Inconsistent documentation confuses contributors
+
+**Example mistakes to avoid:**
+- ❌ Claiming "428/430 tests passing" when actual is 461/463
+- ❌ Showing outdated performance numbers (Filter: 10ms vs 21ms actual)
+- ❌ Missing new features in the changelog
+
+**Checklist for every milestone:**
+- [ ] Update CHANGELOG.md with new version section
+- [ ] Update README.md test count
+- [ ] Update README.md performance benchmarks
+- [ ] Update README.md feature list
+- [ ] Verify all claims are accurate
+
+---
+
 ## Documentation Map
 
 ### Core Documentation

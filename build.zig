@@ -75,20 +75,9 @@ pub fn build(b: *std.Build) void {
     const profile_join_step = b.step("profile-join", "Profile join operation phases");
     profile_join_step.dependOn(&run_profile_join.step);
 
-    // Benchmark join executable
-    const benchmark_join = b.addExecutable(.{
-        .name = "benchmark-join",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/profiling_tools/benchmark_join.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    benchmark_join.root_module.addImport("rozes", rozes_mod);
-
-    const run_benchmark_join = b.addRunArtifact(benchmark_join);
-    const benchmark_join_step = b.step("benchmark-join", "Benchmark join performance");
-    benchmark_join_step.dependOn(&run_benchmark_join.step);
+    // Note: benchmark-join has been integrated into main benchmark (zig build benchmark)
+    // The main benchmark now includes both full pipeline join (with CSV overhead)
+    // and pure join algorithm performance measurements.
 
     // Wasm build for browser
     // Using wasi instead of freestanding to get POSIX-like APIs (needed for ArenaAllocator)
@@ -125,7 +114,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     wasm_prod.entry = .disabled;
-    wasm_prod.rdynamic = true;
+    wasm_prod.rdynamic = true; // Required for WASM to export all functions
     wasm_prod.export_memory = true;
     wasm_prod.import_memory = false;
 
@@ -139,6 +128,11 @@ pub fn build(b: *std.Build) void {
         "--strip-debug", // Remove debug sections
         "--strip-producers", // Remove producers section
         "--strip-dwarf", // Remove DWARF debug info
+        "--dce", // Dead code elimination
+        "--vacuum", // Remove unused names
+        "--inline-functions-with-loops", // Aggressive function inlining
+        "--optimize-level=4", // Maximum optimization passes
+        "--shrink-level=2", // Maximum code shrinking
         "--converge", // Run optimization passes until no more gains
         "-o",
     });

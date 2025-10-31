@@ -363,3 +363,128 @@ pub fn mapBool(
     result.length = series.length;
     return result;
 }
+
+/// Map an Int64 function that converts to Float64
+///
+/// **Usage**: Convert integer column to floating point
+///
+/// **Performance**: O(n) where n = column length
+/// **Memory**: Allocates new Float64 series
+///
+/// Example:
+/// ```zig
+/// fn toFloat(x: i64) f64 {
+///     return @floatFromInt(x);
+/// }
+///
+/// const float_col = try mapInt64ToFloat64(allocator, int_col, toFloat);
+/// defer float_col.deinit(allocator);
+/// ```
+pub fn mapInt64ToFloat64(
+    allocator: std.mem.Allocator,
+    series: *const Series,
+    func: fn (i64) f64,
+) !Series {
+    std.debug.assert(series.length > 0); // Series must have data
+    std.debug.assert(series.length <= MAX_ROWS); // Within limits
+    std.debug.assert(series.value_type == .Int64); // Input type must be Int64
+
+    const input = series.asInt64() orelse return error.TypeMismatch;
+    var result = try Series.init(allocator, "map_result", .Float64, series.length);
+    errdefer result.deinit(allocator);
+
+    const buffer = result.asFloat64Buffer() orelse return error.TypeMismatch;
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < input.len) : (i += 1) {
+        buffer[i] = func(input[i]);
+    }
+
+    std.debug.assert(i == input.len); // All elements processed
+    result.length = series.length;
+    return result;
+}
+
+/// Map a Float64 function that converts to Int64 (truncates)
+///
+/// **Usage**: Convert floating point column to integer (truncates decimal part)
+///
+/// **Performance**: O(n) where n = column length
+/// **Memory**: Allocates new Int64 series
+///
+/// **Note**: Conversion truncates toward zero (3.7 → 3, -3.7 → -3)
+///
+/// Example:
+/// ```zig
+/// fn toInt(x: f64) i64 {
+///     return @intFromFloat(x); // Truncates: 3.7 → 3
+/// }
+///
+/// const int_col = try mapFloat64ToInt64(allocator, float_col, toInt);
+/// defer int_col.deinit(allocator);
+/// ```
+pub fn mapFloat64ToInt64(
+    allocator: std.mem.Allocator,
+    series: *const Series,
+    func: fn (f64) i64,
+) !Series {
+    std.debug.assert(series.length > 0); // Series must have data
+    std.debug.assert(series.length <= MAX_ROWS); // Within limits
+    std.debug.assert(series.value_type == .Float64); // Input type must be Float64
+
+    const input = series.asFloat64() orelse return error.TypeMismatch;
+    var result = try Series.init(allocator, "map_result", .Int64, series.length);
+    errdefer result.deinit(allocator);
+
+    const buffer = result.asInt64Buffer() orelse return error.TypeMismatch;
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < input.len) : (i += 1) {
+        buffer[i] = func(input[i]);
+    }
+
+    std.debug.assert(i == input.len); // All elements processed
+    result.length = series.length;
+    return result;
+}
+
+/// Map a Bool function that converts to Int64
+///
+/// **Usage**: Convert boolean column to integer (true=1, false=0)
+///
+/// **Performance**: O(n) where n = column length
+/// **Memory**: Allocates new Int64 series
+///
+/// Example:
+/// ```zig
+/// fn boolToInt(x: bool) i64 {
+///     return if (x) 1 else 0;
+/// }
+///
+/// const int_col = try mapBoolToInt64(allocator, bool_col, boolToInt);
+/// defer int_col.deinit(allocator);
+/// ```
+pub fn mapBoolToInt64(
+    allocator: std.mem.Allocator,
+    series: *const Series,
+    func: fn (bool) i64,
+) !Series {
+    std.debug.assert(series.length > 0); // Series must have data
+    std.debug.assert(series.length <= MAX_ROWS); // Within limits
+    std.debug.assert(series.value_type == .Bool); // Input type must be Bool
+
+    const input = series.asBool() orelse return error.TypeMismatch;
+    var result = try Series.init(allocator, "map_result", .Int64, series.length);
+    errdefer result.deinit(allocator);
+
+    const buffer = result.asInt64Buffer() orelse return error.TypeMismatch;
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < input.len) : (i += 1) {
+        buffer[i] = func(input[i]);
+    }
+
+    std.debug.assert(i == input.len); // All elements processed
+    result.length = series.length;
+    return result;
+}

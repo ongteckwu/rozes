@@ -551,3 +551,166 @@ test "Integration: type mismatch returns null (no crashes)" {
     // Try to get string from Int64 series
     try testing.expect(series.getString(0) == null);
 }
+
+// =============================================================================
+// HASH CACHING TESTS (6 tests)
+// =============================================================================
+
+test "StringColumn hash cache: enableHashCache pre-computes hashes" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+
+    // Create string column with 5 strings
+    var col = try StringColumn.init(allocator, 10, 100);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "hello");
+    try col.append(allocator, "world");
+    try col.append(allocator, "test");
+    try col.append(allocator, "data");
+    try col.append(allocator, "frame");
+
+    try testing.expectEqual(@as(u32, 5), col.count);
+    try testing.expect(col.hash_cache == null); // Cache disabled by default
+
+    // Enable hash cache
+    try col.enableHashCache(allocator);
+
+    try testing.expect(col.hash_cache != null); // Cache enabled
+    if (col.hash_cache) |cache| {
+        try testing.expectEqual(@as(usize, 5), cache.len); // All hashes pre-computed
+        // Verify hashes are non-zero
+        try testing.expect(cache[0] != 0);
+        try testing.expect(cache[4] != 0);
+    }
+}
+
+test "StringColumn hash cache: getHash returns cached value when enabled" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+    const string_utils = @import("../../../core/string_utils.zig");
+
+    var col = try StringColumn.init(allocator, 10, 100);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "hello");
+    try col.append(allocator, "world");
+
+    // Without cache: getHash computes hash
+    const hash_no_cache = col.getHash(0);
+    try testing.expect(hash_no_cache != 0);
+    try testing.expectEqual(string_utils.fastHash("hello"), hash_no_cache);
+
+    // Enable cache
+    try col.enableHashCache(allocator);
+
+    // With cache: getHash returns cached value
+    const hash_with_cache = col.getHash(0);
+    try testing.expect(hash_with_cache != 0);
+    try testing.expectEqual(hash_no_cache, hash_with_cache); // Same hash value
+    try testing.expectEqual(string_utils.fastHash("hello"), hash_with_cache);
+}
+
+test "StringColumn hash cache: getHash computes on demand when disabled" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+    const string_utils = @import("../../../core/string_utils.zig");
+
+    var col = try StringColumn.init(allocator, 10, 100);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "test");
+    try col.append(allocator, "data");
+
+    try testing.expect(col.hash_cache == null); // Cache disabled
+
+    // getHash should still work (compute on demand)
+    const hash1 = col.getHash(0);
+    const hash2 = col.getHash(1);
+
+    try testing.expect(hash1 != 0);
+    try testing.expect(hash2 != 0);
+    try testing.expect(hash1 != hash2); // Different strings → different hashes
+    try testing.expectEqual(string_utils.fastHash("test"), hash1);
+    try testing.expectEqual(string_utils.fastHash("data"), hash2);
+}
+
+test "StringColumn hash cache: deinit frees cache memory" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+
+    var col = try StringColumn.init(allocator, 10, 100);
+
+    try col.append(allocator, "hello");
+    try col.append(allocator, "world");
+    try col.append(allocator, "test");
+
+    // Enable cache (allocates memory)
+    try col.enableHashCache(allocator);
+    try testing.expect(col.hash_cache != null);
+
+    // deinit should free cache without leaks
+    col.deinit(allocator);
+
+    // Test passes if testing.allocator doesn't report leaks
+}
+
+test "StringColumn hash cache: enableHashCache replaces old cache" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+
+    var col = try StringColumn.init(allocator, 10, 100);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "first");
+    try col.append(allocator, "second");
+
+    // Enable cache first time
+    try col.enableHashCache(allocator);
+    try testing.expect(col.hash_cache != null);
+    const first_hash = col.getHash(0);
+
+    // Enable cache second time (should replace old cache)
+    try col.enableHashCache(allocator);
+    try testing.expect(col.hash_cache != null);
+    const second_hash = col.getHash(0);
+
+    // Hash values should be the same (same data)
+    try testing.expectEqual(first_hash, second_hash);
+
+    // Test passes if no memory leaks (testing.allocator validates)
+}
+
+test "StringColumn hash cache: hash consistency across cache enable/disable" {
+    const allocator = testing.allocator;
+    const StringColumn = @import("../../../core/series.zig").StringColumn;
+
+    var col = try StringColumn.init(allocator, 10, 100);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "consistency");
+    try col.append(allocator, "test");
+    try col.append(allocator, "data");
+
+    // Get hashes without cache
+    const hash0_no_cache = col.getHash(0);
+    const hash1_no_cache = col.getHash(1);
+    const hash2_no_cache = col.getHash(2);
+
+    // Enable cache
+    try col.enableHashCache(allocator);
+
+    // Get hashes with cache
+    const hash0_with_cache = col.getHash(0);
+    const hash1_with_cache = col.getHash(1);
+    const hash2_with_cache = col.getHash(2);
+
+    // Hashes should be identical (same algorithm)
+    try testing.expectEqual(hash0_no_cache, hash0_with_cache);
+    try testing.expectEqual(hash1_no_cache, hash1_with_cache);
+    try testing.expectEqual(hash2_no_cache, hash2_with_cache);
+
+    // Different strings should have different hashes
+    try testing.expect(hash0_no_cache != hash1_no_cache);
+    try testing.expect(hash1_no_cache != hash2_no_cache);
+}

@@ -4,6 +4,34 @@
 
 ---
 
+## ⚠️ CRITICAL: Milestone Documentation Updates
+
+**At EVERY milestone completion (0.1.0, 0.2.0, 1.0.0, 1.1.0, etc.), you MUST update:**
+
+1. **docs/CHANGELOG.md**: Add new section with version number, date, and complete list of changes
+   - **Format**: Point form (bullet points), NOT paragraphs
+   - Keep it concise and scannable
+2. **README.md**: Update version numbers, test counts, performance benchmarks, and feature lists
+
+**Why this is critical:**
+- Users rely on CHANGELOG.md for migration and version history
+- README.md is the first impression - outdated stats hurt credibility
+- Inconsistent documentation confuses contributors
+
+**Example mistakes to avoid:**
+- ❌ Claiming "428/430 tests passing" when actual is 461/463
+- ❌ Showing outdated performance numbers (Filter: 10ms vs 21ms actual)
+- ❌ Missing new features in the changelog
+
+**Checklist for every milestone:**
+- [ ] Update CHANGELOG.md with new version section
+- [ ] Update README.md test count
+- [ ] Update README.md performance benchmarks
+- [ ] Update README.md feature list
+- [ ] Verify all claims are accurate
+
+---
+
 ## Table of Contents
 
 1. [Critical WebAssembly Pitfalls](#critical-webassembly-pitfalls) ⚠️ **READ THIS FIRST**
@@ -21,11 +49,11 @@
 
 ## Performance Optimization Strategy
 
-> **🚀 NEW (2025-10-28)**: Comprehensive optimization approach based on successful join optimization (593ms → 16ms, 97.3% improvement).
+> **🚀 UPDATED (2025-10-30)**: Comprehensive optimization approach. Latest achievements: String SIMD (1.42ms join, 85.8% faster than target), CSV 909ms/1M rows.
 
 ### Quick Reference
 
-**For detailed optimization methodology, see: [`../docs/OPTIMIZATION_APPROACH.md`](../docs/OPTIMIZATION_APPROACH.md)**
+**For detailed 1.0.0 optimization plan, see: [`../docs/OPTIMIZATION_ROADMAP_1.0.0.md`](../docs/OPTIMIZATION_ROADMAP_1.0.0.md)**
 
 ### Core Principles (TL;DR)
 
@@ -34,19 +62,35 @@
    - Always measure before optimizing
    - Don't guess bottlenecks - use profiling tools
    - Example: Join optimization revealed data copying (40-60% of time), NOT hash operations
+   - Recent: Pure join benchmark separated from full pipeline (1.42ms vs 968ms)
 
 2. **Low-Hanging Fruit Priority**
 
-   - ① Algorithmic improvements (biggest impact)
-   - ② SIMD integration (2-5× speedup)
-   - ③ Memory layout (cache-friendly)
-   - ④ Code elimination (remove redundant work)
+   - ① Algorithmic improvements (biggest impact) - e.g., hash join O(n+m) vs nested loop O(n×m)
+   - ② SIMD integration (2-5× speedup) - e.g., string comparison 2-4× faster with 16-byte SIMD
+   - ③ Memory layout (cache-friendly) - e.g., column-wise memcpy for sequential access
+   - ④ Code elimination (remove redundant work) - e.g., length-first string comparison
 
-3. **Measure Everything**
+3. **Critical Optimization Learnings (0.7.0)**
+
+   - **String Interning**: 4-8× memory reduction for low-cardinality data (<5% unique strings)
+   - **SIMD String Comparison**: 2-4× faster for strings >16 bytes, 7.5× faster on unequal lengths
+   - **Hash Caching**: Pre-compute string hashes → 20-30% faster join/groupby (future)
+   - **Column Name HashMap**: O(n) → O(1) lookups → 30-50% faster wide DataFrames (future)
+   - **Benchmark Design**: Separate full pipeline (real-world) vs pure algorithm (optimization target)
+
+4. **Measure Everything**
    - Baseline performance (before)
    - Expected improvement (calculation)
    - Actual improvement (benchmark)
    - Correctness (tests pass)
+
+5. **Known Performance Bottlenecks (1.0.0 Targets)**
+
+   - **CSV Parsing**: 909ms/1M rows → Target: <700ms (SIMD delimiter detection)
+   - **GroupBy Aggregations**: 2.83ms/100K rows → Target: <2.0ms (SIMD sum/mean/min/max)
+   - **ValueCounts Large Dataset**: 1987ms → Target: <500ms (pre-allocate HashMap, string interning)
+   - **Bundle Size**: 74KB (40KB gzip) → Target: <60KB (dead code elimination, strip debug)
 
 ### Current Optimization Status (Phase 1)
 

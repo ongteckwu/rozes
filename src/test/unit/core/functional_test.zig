@@ -276,10 +276,7 @@ fn toFloat(x: i64) f64 {
     return @as(f64, @floatFromInt(x));
 }
 
-// NOTE: Type conversion tests commented out - requires more complex routing logic
-// TODO: Re-enable after implementing proper type conversion support
-test "map: Int64 → Float64 conversion (SKIP)" {
-    if (true) return error.SkipZigTest;
+test "map: Int64 → Float64 conversion" {
     const allocator = testing.allocator;
 
     var series = try Series.init(allocator, "ints", .Int64, 5);
@@ -292,7 +289,8 @@ test "map: Int64 → Float64 conversion (SKIP)" {
 
     series.length = 3;
 
-    var result = try functional.map(allocator, &series, @TypeOf(toFloat), toFloat, .Float64);
+    // Use the new type-specific conversion function
+    var result = try functional.mapInt64ToFloat64(allocator, &series, toFloat);
     defer result.deinit(allocator);
 
     const floats = result.asFloat64().?;
@@ -306,8 +304,7 @@ fn toInt(x: f64) i64 {
     return @as(i64, @intFromFloat(x));
 }
 
-test "map: Float64 → Int64 conversion (truncate) (SKIP)" {
-    if (true) return error.SkipZigTest;
+test "map: Float64 → Int64 conversion (truncate)" {
     const allocator = testing.allocator;
 
     var series = try Series.init(allocator, "floats", .Float64, 5);
@@ -320,7 +317,8 @@ test "map: Float64 → Int64 conversion (truncate) (SKIP)" {
 
     series.length = 3;
 
-    var result = try functional.map(allocator, &series, @TypeOf(toInt), toInt, .Int64);
+    // Use the new type-specific conversion function
+    var result = try functional.mapFloat64ToInt64(allocator, &series, toInt);
     defer result.deinit(allocator);
 
     const ints = result.asInt64().?;
@@ -334,9 +332,29 @@ fn boolToInt(x: bool) i64 {
     return if (x) @as(i64, 1) else @as(i64, 0);
 }
 
-test "map: Bool → Int64 conversion (SKIP)" {
-    // TODO: Re-enable after implementing proper cross-type conversion
-    return error.SkipZigTest;
+test "map: Bool → Int64 conversion" {
+    const allocator = testing.allocator;
+
+    var series = try Series.init(allocator, "bools", .Bool, 5);
+    defer series.deinit(allocator);
+
+    const data = series.asBoolBuffer().?;
+    data[0] = true;
+    data[1] = false;
+    data[2] = true;
+    data[3] = false;
+
+    series.length = 4;
+
+    // Use the new type-specific conversion function
+    var result = try functional.mapBoolToInt64(allocator, &series, boolToInt);
+    defer result.deinit(allocator);
+
+    const ints = result.asInt64().?;
+    try testing.expectEqual(@as(i64, 1), ints[0]);
+    try testing.expectEqual(@as(i64, 0), ints[1]);
+    try testing.expectEqual(@as(i64, 1), ints[2]);
+    try testing.expectEqual(@as(i64, 0), ints[3]);
 }
 
 // ============================================================================

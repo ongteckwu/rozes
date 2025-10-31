@@ -22,8 +22,10 @@ pub const SIMD_WIDTH = 16;
 pub const simd_available = blk: {
     // WebAssembly SIMD
     if (builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64) {
-        // WASM SIMD is optional, check features
-        break :blk @hasDecl(builtin.cpu.features, "simd128");
+        // For WASM, assume SIMD support (browsers from 2021+)
+        // WASM SIMD is optional in Zig, but widely supported
+        // TODO: Add runtime feature detection if needed
+        break :blk true;
     }
     // x86_64 with SSE2 (standard since 2003)
     if (builtin.cpu.arch == .x86_64) {

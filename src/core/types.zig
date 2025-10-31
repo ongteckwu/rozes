@@ -393,6 +393,18 @@ pub const ParseErrorType = enum {
     InvalidEscape,
 };
 
+/// Error recovery mode for tolerant CSV parsing
+pub const ErrorRecoveryMode = enum {
+    /// Skip malformed rows entirely (default)
+    SkipRow,
+
+    /// Fill malformed fields with null values
+    FillNull,
+
+    /// Best-effort type coercion (e.g., "abc" → 0 for integers)
+    BestEffort,
+};
+
 /// Common error set for Rozes operations
 pub const RozesError = error{
     /// CSV is too large

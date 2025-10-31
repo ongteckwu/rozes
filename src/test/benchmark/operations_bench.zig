@@ -117,6 +117,16 @@ pub fn benchmarkGroupBy(
 }
 
 /// Benchmark inner join
+///
+/// **NOTE**: This benchmark includes CSV generation + parsing overhead for creating
+/// test DataFrames (~350ms per 10K DataFrame = ~700ms total for 10K × 10K).
+/// For join-only performance, see `src/profiling_tools/benchmark_join.zig` which
+/// shows actual join operation is ~5ms for 10K × 10K.
+///
+/// **Why measure with CSV overhead?**
+/// - Represents real-world workflow: user loads CSV → performs join
+/// - Tests full pipeline: parse → join → result
+/// - Useful for end-to-end performance comparison
 pub fn benchmarkJoin(
     allocator: std.mem.Allocator,
     left_rows: u32,
@@ -125,15 +135,18 @@ pub fn benchmarkJoin(
     std.debug.assert(left_rows > 0); // Pre-condition #1
     std.debug.assert(right_rows > 0); // Pre-condition #2
 
-    // Create two DataFrames
+    // START TIMING: Includes DataFrame creation (CSV gen + parse)
+    // This is intentional - measures real-world "load CSV and join" workflow
+    const start = std.time.nanoTimestamp();
+
+    // Create two DataFrames (via CSV - includes parsing overhead)
     var df1 = try createTestDataFrame(allocator, left_rows);
     defer df1.deinit();
 
     var df2 = try createTestDataFrame(allocator, right_rows);
     defer df2.deinit();
 
-    const start = std.time.nanoTimestamp();
-
+    // Perform join
     const join_cols = [_][]const u8{"name"};
     var joined = try df1.innerJoin(allocator, &df2, &join_cols);
     defer joined.deinit();
@@ -143,8 +156,91 @@ pub fn benchmarkJoin(
     // Verify we got join results
     std.debug.assert(joined.row_count > 0); // Post-condition
 
-    // Use total processed rows for throughput
+    // Use total processed rows for throughput (left + right)
     const total_rows = left_rows + right_rows;
+    return BenchmarkResult.compute(start, end, total_rows);
+}
+
+/// Benchmark pure inner join (no CSV overhead)
+///
+/// This measures ONLY the join algorithm performance, excluding CSV generation/parsing.
+/// Creates DataFrames directly in memory for accurate join-only timing.
+///
+/// **Use this to measure**:
+/// - Join algorithm optimization (e.g., column-wise memcpy vs row-by-row)
+/// - Hash table performance
+/// - Memory copy efficiency
+///
+/// **Target**: <10ms for 10K × 10K join
+pub fn benchmarkPureJoin(
+    allocator: std.mem.Allocator,
+    row_count: u32,
+) !BenchmarkResult {
+    std.debug.assert(row_count > 0); // Pre-condition
+
+    // Create left DataFrame directly (no CSV)
+    const left_cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("left_val1", .Float64, 1),
+        ColumnDesc.init("left_val2", .Int64, 2),
+        ColumnDesc.init("left_active", .Bool, 3),
+    };
+
+    var left = try DataFrame.create(allocator, &left_cols, row_count);
+    defer left.deinit();
+
+    const left_ids = left.columns[0].asInt64Buffer() orelse unreachable;
+    const left_val1 = left.columns[1].asFloat64Buffer() orelse unreachable;
+    const left_val2 = left.columns[2].asInt64Buffer() orelse unreachable;
+    const left_active = left.columns[3].asBoolBuffer() orelse unreachable;
+
+    var i: u32 = 0;
+    while (i < row_count) : (i += 1) {
+        left_ids[i] = @intCast(i);
+        left_val1[i] = @as(f64, @floatFromInt(i)) * 1.5;
+        left_val2[i] = @intCast(i * 10);
+        left_active[i] = (i % 2) == 0;
+    }
+    try left.setRowCount(row_count);
+
+    // Create right DataFrame directly (no CSV)
+    const right_cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("right_val1", .Int64, 1),
+        ColumnDesc.init("right_val2", .Float64, 2),
+    };
+
+    var right = try DataFrame.create(allocator, &right_cols, row_count);
+    defer right.deinit();
+
+    const right_ids = right.columns[0].asInt64Buffer() orelse unreachable;
+    const right_val1 = right.columns[1].asInt64Buffer() orelse unreachable;
+    const right_val2 = right.columns[2].asFloat64Buffer() orelse unreachable;
+
+    i = 0;
+    while (i < row_count) : (i += 1) {
+        right_ids[i] = @intCast(i);
+        right_val1[i] = @intCast(i * 2);
+        right_val2[i] = @as(f64, @floatFromInt(i)) * 2.5;
+    }
+    try right.setRowCount(row_count);
+
+    // START TIMING: Pure join algorithm only
+    const start = std.time.nanoTimestamp();
+
+    // Perform join
+    const join_cols = [_][]const u8{"id"};
+    var joined = try left.innerJoin(allocator, &right, &join_cols);
+    defer joined.deinit();
+
+    const end = std.time.nanoTimestamp();
+
+    // Verify we got join results
+    std.debug.assert(joined.row_count == row_count); // Post-condition: 1:1 join
+    std.debug.assert(joined.columns.len == left_cols.len + right_cols.len - 1); // Post-condition: all columns minus duplicate key
+
+    // Use total processed rows for throughput (left + right)
+    const total_rows = row_count * 2;
     return BenchmarkResult.compute(start, end, total_rows);
 }
 

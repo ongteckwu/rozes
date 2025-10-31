@@ -17,7 +17,8 @@
       "Bash(wc:*)",
       "Bash(for f in /Users/ongteckwu/toolchain-sawman/parser/src/{resolver,loader,path_utils,package_json,graph}.zig)",
       "Bash(find:*)",
-      "Bash(wasm-opt:*)"
+      "Bash(wasm-opt:*)",
+      "Bash(gzip:*)"
     ],
     "deny": [],
     "ask": []

@@ -78,6 +78,9 @@ pub const JSONOptions = json.JSONOptions;
 // SIMD utilities
 pub const simd = @import("core/simd.zig");
 
+// Error utilities
+pub const error_utils = @import("core/error_utils.zig");
+
 /// Library version
 pub const VERSION = "0.1.0-dev";
 
@@ -99,6 +102,7 @@ test {
     _ = @import("core/reshape.zig");
     _ = @import("core/combine.zig");
     _ = @import("core/functional.zig");
+    _ = @import("core/error_utils.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
     _ = @import("json/parser.zig");
@@ -116,7 +120,9 @@ test {
     // New comprehensive test files (added 2025-10-28)
     _ = @import("test/unit/core/operations_test.zig");
     _ = @import("test/unit/core/dataframe_test.zig");
+    _ = @import("test/unit/core/column_index_test.zig"); // Column HashMap O(1) lookup tests
     _ = @import("test/unit/core/series_test.zig");
+    _ = @import("test/unit/core/convenience_test.zig"); // Convenience methods (sample, info, unique, nunique) - added 2025-10-31
 
     // JSON parser tests (added 2025-10-30, Phase 1: NDJSON)
     _ = @import("test/unit/json/parser_test.zig");

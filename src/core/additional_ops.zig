@@ -641,6 +641,114 @@ pub fn describe(
     return result;
 }
 
+/// Returns random sample of n rows from DataFrame
+///
+/// Args:
+///   - df: Source DataFrame
+///   - allocator: Allocator for new DataFrame
+///   - n: Number of rows to sample (with replacement)
+///
+/// Returns: New DataFrame with n random rows (caller owns, must call deinit())
+///
+/// Performance: O(n * m) where n is sample size, m is columns
+///
+/// Example:
+/// ```zig
+/// const sample = try df.sample(allocator, 100);
+/// defer sample.deinit();
+/// ```
+pub fn sample(
+    df: *const DataFrame,
+    allocator: std.mem.Allocator,
+    n: u32,
+) !DataFrame {
+    std.debug.assert(n > 0); // Pre-condition #1
+    std.debug.assert(df.row_count <= MAX_ROWS); // Pre-condition #2
+
+    // Handle empty DataFrame
+    if (df.row_count == 0) {
+        return try DataFrame.create(allocator, df.column_descs, 0);
+    }
+
+    const actual_n = @min(n, df.row_count);
+
+    // Generate random indices with replacement
+    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    const random = prng.random();
+
+    var indices = try allocator.alloc(u32, actual_n);
+    defer allocator.free(indices);
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < actual_n) : (i += 1) {
+        indices[i] = random.intRangeAtMost(u32, 0, df.row_count - 1);
+    }
+    std.debug.assert(i == actual_n); // Post-condition #3
+
+    // Create new DataFrame with sampled rows
+    var result = try DataFrame.create(allocator, df.column_descs, actual_n);
+    errdefer result.deinit();
+
+    // Copy sampled rows
+    for (df.columns, 0..) |*src_col, col_idx| {
+        var dst_col = &result.columns[col_idx];
+
+        switch (src_col.value_type) {
+            .Int64 => {
+                const src_data = src_col.asInt64() orelse unreachable;
+                const dst_data = dst_col.asInt64Buffer() orelse unreachable;
+                var row_idx: u32 = 0;
+                while (row_idx < MAX_ROWS and row_idx < actual_n) : (row_idx += 1) {
+                    dst_data[row_idx] = src_data[indices[row_idx]];
+                }
+                std.debug.assert(row_idx == actual_n);
+            },
+            .Float64 => {
+                const src_data = src_col.asFloat64() orelse unreachable;
+                const dst_data = dst_col.asFloat64Buffer() orelse unreachable;
+                var row_idx: u32 = 0;
+                while (row_idx < MAX_ROWS and row_idx < actual_n) : (row_idx += 1) {
+                    dst_data[row_idx] = src_data[indices[row_idx]];
+                }
+                std.debug.assert(row_idx == actual_n);
+            },
+            .String => {
+                const src_string_col = src_col.asStringColumn() orelse unreachable;
+                var row_idx: u32 = 0;
+                while (row_idx < MAX_ROWS and row_idx < actual_n) : (row_idx += 1) {
+                    const str = src_string_col.get(indices[row_idx]);
+                    try dst_col.appendString(result.getAllocator(), str);
+                }
+                std.debug.assert(row_idx == actual_n);
+            },
+            .Bool => {
+                const src_data = src_col.asBool() orelse unreachable;
+                const dst_data = dst_col.asBoolBuffer() orelse unreachable;
+                var row_idx: u32 = 0;
+                while (row_idx < MAX_ROWS and row_idx < actual_n) : (row_idx += 1) {
+                    dst_data[row_idx] = src_data[indices[row_idx]];
+                }
+                std.debug.assert(row_idx == actual_n);
+            },
+            .Categorical => {
+                // Deep copy categorical with sampled rows
+                const src_cat_col = src_col.asCategoricalColumn() orelse unreachable;
+                const new_cat_col = try src_cat_col.deepCopyRows(
+                    result.getAllocator(),
+                    indices,
+                );
+
+                dst_col.data = .{ .Categorical = try result.getAllocator().create(@TypeOf(new_cat_col)) };
+                dst_col.data.Categorical.* = new_cat_col;
+            },
+            .Null => {},
+        }
+    }
+
+    try result.setRowCount(actual_n);
+    return result;
+}
+
 fn computeNumericSummary(comptime T: type, data: []const T) !Summary {
     std.debug.assert(data.len > 0); // Pre-condition #1
     std.debug.assert(data.len <= MAX_ROWS); // Pre-condition #2

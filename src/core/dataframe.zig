@@ -33,6 +33,31 @@ fn logError(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
+/// Result of tolerant CSV parsing with error recovery
+pub const ParseResult = struct {
+    /// The parsed DataFrame (may be partial if errors occurred)
+    dataframe: *DataFrame,
+
+    /// List of parse errors encountered (empty if no errors)
+    errors: std.ArrayListUnmanaged(types.ParseError),
+
+    /// Number of rows successfully parsed
+    rows_parsed: u32,
+
+    /// Number of rows skipped due to errors
+    rows_skipped: u32,
+
+    /// Free all resources
+    pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
+        std.debug.assert(self.rows_parsed <= std.math.maxInt(u32)); // Valid count
+        std.debug.assert(self.rows_skipped <= std.math.maxInt(u32)); // Valid count
+
+        self.dataframe.deinit();
+        allocator.destroy(self.dataframe);
+        self.errors.deinit(allocator);
+    }
+};
+
 /// Multi-column table with typed data
 pub const DataFrame = struct {
     /// Arena allocator for DataFrame lifetime
@@ -43,6 +68,9 @@ pub const DataFrame = struct {
 
     /// Column data (array of Series)
     columns: []Series,
+
+    /// Column name to index mapping for O(1) lookups
+    column_index: std.StringHashMapUnmanaged(u32),
 
     /// Number of rows
     row_count: u32,
@@ -91,10 +119,22 @@ pub const DataFrame = struct {
             cols[i] = try Series.init(arena_allocator, name, desc.value_type, capacity);
         }
 
+        // Build column name index for O(1) lookups
+        var column_index = std.StringHashMapUnmanaged(u32){};
+        for (descs, 0..) |desc, i| {
+            try column_index.put(arena_allocator, desc.name, @intCast(i));
+        }
+
+        // Note: column_index.count() may be less than descs.len if there are duplicate column names
+        // (e.g., from transpose where row values become column names)
+        std.debug.assert(column_index.count() <= descs.len); // Index count <= column count
+        std.debug.assert(descs.len == columnDescs.len); // Correct column count
+
         return DataFrame{
             .arena = arena,
             .column_descs = descs,
             .columns = cols,
+            .column_index = column_index,
             .row_count = 0,
         };
     }
@@ -168,20 +208,15 @@ pub const DataFrame = struct {
         return &self.columns[idx];
     }
 
-    /// Finds column index by name
+    /// Finds column index by name using O(1) hash map lookup
     pub fn columnIndex(self: *const DataFrame, name: []const u8) ?usize {
         std.debug.assert(name.len > 0); // Name required
         std.debug.assert(self.column_descs.len <= MAX_COLS); // Invariant
 
-        var i: u32 = 0;
-        while (i < MAX_COLS and i < self.column_descs.len) : (i += 1) {
-            if (std.mem.eql(u8, self.column_descs[i].name, name)) {
-                return i;
-            }
-        }
+        const idx = self.column_index.get(name) orelse return null; // O(1) hash lookup
 
-        std.debug.assert(i <= MAX_COLS); // Post-condition
-        return null;
+        std.debug.assert(idx < self.column_descs.len); // Valid index
+        return idx;
     }
 
     /// Gets column by index
@@ -605,6 +640,98 @@ pub const DataFrame = struct {
     ) !std.StringHashMap(Summary) {
         const ops = @import("additional_ops.zig");
         return ops.describe(self, allocator);
+    }
+
+    /// Returns random sample of n rows from DataFrame
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - n: Number of rows to sample (with replacement)
+    ///
+    /// Returns: New DataFrame with n random rows (caller owns, must call deinit())
+    ///
+    /// Performance: O(n * m) where n is sample size, m is columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const sample_df = try df.sample(allocator, 100);
+    /// defer sample_df.deinit();
+    /// ```
+    pub fn sample(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        n: u32,
+    ) !DataFrame {
+        const ops = @import("additional_ops.zig");
+        return ops.sample(self, allocator, n);
+    }
+
+    /// Returns schema information for DataFrame
+    ///
+    /// Prints column names, types, null counts, and memory usage
+    /// Useful for quick DataFrame inspection
+    ///
+    /// Args:
+    ///   - writer: Output writer (e.g., stdout, stderr, or string buffer)
+    ///
+    /// Performance: O(m) where m is number of columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const stdout = std.io.getStdOut().writer();
+    /// try df.info(stdout);
+    /// ```
+    pub fn info(self: *const DataFrame, writer: anytype) !void {
+        std.debug.assert(self.columns.len > 0); // Pre-condition #1
+        std.debug.assert(self.columns.len <= MAX_COLS); // Pre-condition #2
+
+        try writer.print("DataFrame Info:\n", .{});
+        try writer.print("Rows: {}\n", .{self.row_count});
+        try writer.print("Columns: {}\n\n", .{self.columns.len});
+        try writer.print("Column Details:\n", .{});
+        try writer.print("{s:<20} {s:<15} {s:<10} {s:<15}\n", .{ "Name", "Type", "Null Count", "Memory (bytes)" });
+        try writer.print("{s}\n", .{"-" ** 65});
+
+        var total_memory: usize = 0;
+        var col_idx: u32 = 0;
+        while (col_idx < MAX_COLS and col_idx < self.columns.len) : (col_idx += 1) {
+            const col = &self.columns[col_idx];
+            const col_name = self.column_descs[col_idx].name;
+
+            // Count nulls (for now, all columns are non-null)
+            const null_count: u32 = 0;
+
+            // Estimate memory usage
+            const memory: usize = switch (col.value_type) {
+                .Int64 => self.row_count * @sizeOf(i64),
+                .Float64 => self.row_count * @sizeOf(f64),
+                .Bool => self.row_count * @sizeOf(bool),
+                .String => blk: {
+                    const string_col = col.asStringColumn() orelse break :blk 0;
+                    break :blk string_col.memoryUsage();
+                },
+                .Categorical => blk: {
+                    const cat_col = col.asCategoricalColumn() orelse break :blk 0;
+                    break :blk cat_col.memoryUsage();
+                },
+                .Null => 0,
+            };
+
+            total_memory += memory;
+
+            try writer.print("{s:<20} {s:<15} {d:<10} {d:<15}\n", .{
+                col_name,
+                @tagName(col.value_type),
+                null_count,
+                memory,
+            });
+        }
+        std.debug.assert(col_idx == self.columns.len); // Post-condition #3
+
+        try writer.print("\nTotal Memory: {} bytes ({d:.2} MB)\n", .{
+            total_memory,
+            @as(f64, @floatFromInt(total_memory)) / (1024.0 * 1024.0),
+        });
     }
 };
 

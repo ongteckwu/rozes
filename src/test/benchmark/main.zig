@@ -78,11 +78,19 @@ pub fn main() !void {
     }
 
     var join_10k_ms: f64 = 0;
+    var join_10k_pure_ms: f64 = 0;
     {
-        std.debug.print("Running inner join (10K × 10K rows)...\n", .{});
+        std.debug.print("Running inner join (10K × 10K rows) [includes CSV parse overhead]...\n", .{});
         const result = try ops_bench.benchmarkJoin(allocator, 10_000, 10_000);
-        result.print("Inner Join (10K × 10K rows)");
+        result.print("Inner Join (10K × 10K rows) [full pipeline]");
         join_10k_ms = result.duration_ms;
+    }
+
+    {
+        std.debug.print("Running pure inner join (10K × 10K rows) [no CSV overhead]...\n", .{});
+        const result = try ops_bench.benchmarkPureJoin(allocator, 10_000);
+        result.print("Inner Join (10K × 10K rows) [pure algorithm]");
+        join_10k_pure_ms = result.duration_ms;
     }
 
     {
@@ -105,7 +113,8 @@ pub fn main() !void {
         bench.Comparison.check("Filter (1M rows)", 100.0, filter_1m_ms),
         bench.Comparison.check("Sort (100K rows)", 100.0, sort_100k_ms),
         bench.Comparison.check("GroupBy (100K rows)", 300.0, groupby_100k_ms),
-        bench.Comparison.check("Join (10K × 10K)", 500.0, join_10k_ms),
+        bench.Comparison.check("Join (10K × 10K) [full]", 500.0, join_10k_ms),
+        bench.Comparison.check("Join (10K × 10K) [pure]", 10.0, join_10k_pure_ms),
     };
 
     var passed: u32 = 0;
@@ -120,8 +129,14 @@ pub fn main() !void {
     if (passed == comparisons.len) {
         std.debug.print("🎉 All performance targets met!\n", .{});
     } else {
-        std.debug.print("⚠️  Some targets not met (optimization needed)\n", .{});
+        std.debug.print("⚠️  Some targets not met (requires investigation)\n", .{});
     }
 
+    std.debug.print("\n", .{});
+    std.debug.print("━━━ Notes ━━━\n\n", .{});
+    std.debug.print("Full join benchmark includes CSV generation + parsing overhead (~700ms for 10K × 10K).\n", .{});
+    std.debug.print("This measures real-world \"load CSV → join\" workflow.\n\n", .{});
+    std.debug.print("Pure join benchmark measures only the join algorithm (~5ms for 10K × 10K).\n", .{});
+    std.debug.print("This shows the performance of the optimized column-wise memcpy implementation.\n", .{});
     std.debug.print("\n", .{});
 }
