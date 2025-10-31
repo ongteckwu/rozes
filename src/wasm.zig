@@ -1056,6 +1056,54 @@ export fn rozes_join(
 }
 
 // ============================================================================
+// CSV Export (Priority 5 - Milestone 1.1.0)
+// ============================================================================
+
+/// Export DataFrame to CSV format
+/// Returns pointer and length of allocated CSV string
+/// Caller must free the buffer using rozes_free_buffer
+export fn rozes_toCSV(
+    handle: i32,
+    opts_json_ptr: [*]const u8,
+    opts_json_len: u32,
+    out_csv_ptr: *u32,
+    out_csv_len: *u32,
+) i32 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(@intFromPtr(out_csv_ptr) != 0); // Non-null output pointer
+    std.debug.assert(@intFromPtr(out_csv_len) != 0); // Non-null output pointer
+
+    const df = registry.get(handle) orelse {
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const opts: CSVOptions = if (opts_json_len > 0) blk: {
+        const opts_json = opts_json_ptr[0..opts_json_len];
+        break :blk parseCSVOptionsJSON(opts_json) catch {
+            return @intFromEnum(ErrorCode.InvalidOptions);
+        };
+    } else CSVOptions{};
+
+    const allocator = getAllocator();
+
+    // Export DataFrame to CSV
+    const csv = df.toCSV(allocator, opts) catch |err| {
+        logError("CSV export failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Return pointer and length
+    const csv_ptr_val: u32 = @intCast(@intFromPtr(csv.ptr));
+    out_csv_ptr.* = csv_ptr_val;
+    out_csv_len.* = @intCast(csv.len);
+
+    std.debug.assert(csv_ptr_val != 0); // Post-condition: Non-null pointer
+    std.debug.assert(out_csv_len.* == @as(u32, @intCast(csv.len))); // Post-condition: Length matches
+
+    return @intFromEnum(ErrorCode.Success);
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

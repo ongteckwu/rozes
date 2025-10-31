@@ -817,6 +817,95 @@ class DataFrame {
     }
 
     /**
+     * Export DataFrame to CSV format
+     *
+     * @param {Object} options - CSV formatting options
+     * @param {string} [options.delimiter=','] - Field delimiter
+     * @param {boolean} [options.has_headers=true] - Include header row
+     * @returns {string} - CSV string
+     *
+     * @example
+     * const csv = df.toCSV();
+     * console.log(csv);
+     * // Output:
+     * // name,age,score
+     * // Alice,30,95.5
+     * // Bob,25,87.3
+     *
+     * @example
+     * // Custom delimiter (tab-separated)
+     * const tsv = df.toCSV({ delimiter: '\t' });
+     *
+     * @example
+     * // Without headers
+     * const dataOnly = df.toCSV({ has_headers: false });
+     */
+    toCSV(options = {}) {
+        this._checkNotFreed();
+
+        const wasm = this._wasm;
+
+        // Encode options to JSON if provided
+        let optsPtr = 0;
+        let optsLen = 0;
+
+        if (Object.keys(options).length > 0) {
+            const optsJSON = JSON.stringify(options);
+            const optsBytes = new TextEncoder().encode(optsJSON);
+            optsPtr = wasm.instance.exports.rozes_alloc(optsBytes.length);
+            if (optsPtr === 0) {
+                throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate options buffer');
+            }
+            optsLen = optsBytes.length;
+
+            // Copy options to WASM memory
+            new Uint8Array(wasm.memory.buffer, optsPtr, optsLen).set(optsBytes);
+        }
+
+        // Layout: [csvPtr: u32][csvLen: u32]
+        const scratchOffset = 0;
+        const csvPtrOffset = scratchOffset;
+        const csvLenOffset = scratchOffset + 4;
+
+        try {
+            // Call WASM function
+            const result = wasm.instance.exports.rozes_toCSV(
+                this._handle,
+                optsPtr,
+                optsLen,
+                csvPtrOffset,
+                csvLenOffset
+            );
+
+            checkResult(result, 'Failed to export DataFrame to CSV');
+
+            // Read CSV pointer and length
+            const view = new DataView(wasm.memory.buffer);
+            const csvPtr = view.getUint32(csvPtrOffset, true);
+            const csvLen = view.getUint32(csvLenOffset, true);
+
+            // Validate bounds
+            if (csvPtr + csvLen > wasm.memory.buffer.byteLength) {
+                throw new Error(`CSV pointer out of bounds`);
+            }
+
+            // Copy CSV data from WASM memory
+            const csvBytes = new Uint8Array(wasm.memory.buffer, csvPtr, csvLen);
+            const csvString = new TextDecoder('utf-8').decode(csvBytes);
+
+            // Free the CSV buffer
+            wasm.instance.exports.rozes_free_buffer(csvPtr, csvLen);
+
+            return csvString;
+        } finally {
+            // Free options buffer if allocated
+            if (optsPtr !== 0) {
+                wasm.instance.exports.rozes_free_buffer(optsPtr, optsLen);
+            }
+        }
+    }
+
+    /**
      * Free DataFrame memory
      *
      * **Manual memory management (default)**: You must call this when done to prevent leaks.

@@ -378,7 +378,49 @@ export class DataFrame {
     how?: 'inner' | 'left'
   ): DataFrame;
 
-  // NOTE: toCSV() and toCSVFile() will be added in 1.1.0
+  /**
+   * Export DataFrame to CSV format
+   *
+   * @param options - CSV formatting options
+   * @returns CSV string
+   *
+   * @example
+   * ```typescript
+   * // Default options (comma-separated with headers)
+   * const csv = df.toCSV();
+   * console.log(csv);
+   * // Output:
+   * // name,age,score
+   * // Alice,30,95.5
+   * // Bob,25,87.3
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Custom delimiter (tab-separated)
+   * const tsv = df.toCSV({ delimiter: '\t' });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Without headers
+   * const dataOnly = df.toCSV({ has_headers: false });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Save to file (Node.js)
+   * import * as fs from 'fs';
+   * const csv = df.toCSV();
+   * fs.writeFileSync('output.csv', csv, 'utf-8');
+   * ```
+   */
+  toCSV(options?: {
+    /** Field delimiter (default: ',') */
+    delimiter?: string;
+    /** Include header row (default: true) */
+    has_headers?: boolean;
+  }): string;
 
   /**
    * Free DataFrame memory
