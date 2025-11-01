@@ -24,8 +24,7 @@
     "build": "zig build",
     "build:wasm": "zig build -Doptimize=ReleaseSmall",
     "test": "zig build test",
-    "test:node": "node examples/node/basic.js",
-    "test:api": "node src/test/nodejs/basic_api.test.js",
+    "test:node": "node src/test/nodejs/basic_api.test.js",
     "benchmark": "zig build benchmark",
     "benchmark:js": "node src/test/benchmark/compare_js.js"
   },
