@@ -76,6 +76,7 @@ pub fn build(b: *std.Build) void {
     profile_join_step.dependOn(&run_profile_join.step);
 
     // Note: benchmark-join has been integrated into main benchmark (zig build benchmark)
+    // Note: benchmark-parallel-filter integrated into main benchmark (zig build benchmark)
     // Note: radix join benchmark has been integrated into main benchmark (zig build benchmark)
     // The main benchmark now includes both full pipeline join (with CSV overhead)
     // and pure join algorithm performance measurements.

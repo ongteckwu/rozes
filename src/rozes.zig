@@ -34,6 +34,7 @@ pub const SeriesData = series.SeriesData;
 pub const SeriesValue = series.SeriesValue;
 
 pub const dataframe = @import("core/dataframe.zig");
+pub const arrow_ipc = @import("arrow/ipc.zig");
 pub const DataFrame = dataframe.DataFrame;
 pub const RowRef = dataframe.RowRef;
 pub const SortOrder = dataframe.SortOrder;
@@ -49,6 +50,12 @@ pub const operations = @import("core/operations.zig");
 pub const reshape = @import("core/reshape.zig");
 pub const PivotOptions = reshape.PivotOptions;
 pub const MeltOptions = reshape.MeltOptions;
+
+// Query optimization (Milestone 1.2.0 Phase 6)
+pub const query_plan = @import("core/query_plan.zig");
+pub const QueryPlan = query_plan.QueryPlan;
+pub const LazyDataFrame = query_plan.LazyDataFrame;
+pub const QueryOptimizer = query_plan.QueryOptimizer;
 
 // Join optimizations (for benchmarks)
 pub const radix_join = @import("core/radix_join.zig");
@@ -81,6 +88,9 @@ pub const JSONOptions = json.JSONOptions;
 // SIMD utilities
 pub const simd = @import("core/simd.zig");
 
+// Parallel operations
+pub const parallel_ops = @import("core/parallel_ops.zig");
+
 // Error utilities
 pub const error_utils = @import("core/error_utils.zig");
 
@@ -102,6 +112,7 @@ test {
     _ = @import("core/operations.zig");
     _ = @import("core/sort.zig");
     _ = @import("core/simd.zig");
+    _ = @import("core/parallel_ops.zig");
     _ = @import("core/reshape.zig");
     _ = @import("core/combine.zig");
     _ = @import("core/functional.zig");

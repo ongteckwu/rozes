@@ -14,16 +14,19 @@
 2. **README.md**: Update version numbers, test counts, performance benchmarks, and feature lists
 
 **Why this is critical:**
+
 - Users rely on CHANGELOG.md for migration and version history
 - README.md is the first impression - outdated stats hurt credibility
 - Inconsistent documentation confuses contributors
 
 **Example mistakes to avoid:**
+
 - ❌ Claiming "428/430 tests passing" when actual is 461/463
 - ❌ Showing outdated performance numbers (Filter: 10ms vs 21ms actual)
 - ❌ Missing new features in the changelog
 
 **Checklist for every milestone:**
+
 - [ ] Update CHANGELOG.md with new version section
 - [ ] Update README.md test count
 - [ ] Update README.md performance benchmarks
@@ -53,7 +56,10 @@
 
 ### Quick Reference
 
-**For detailed 1.0.0 optimization plan, see: [`../docs/OPTIMIZATION_ROADMAP_1.0.0.md`](../docs/OPTIMIZATION_ROADMAP_1.0.0.md)**
+**For detailed guides, see:**
+
+- **[Performance Guide](../docs/PERFORMANCE.md)** - SIMD, parallel execution, lazy evaluation, and optimization tips (Milestone 1.2.0)
+- **[Optimization Roadmap 1.0.0](../docs/OPTIMIZATION_ROADMAP_1.0.0.md)** - Historical optimization plan
 
 ### Core Principles (TL;DR)
 
@@ -80,6 +86,7 @@
    - **Benchmark Design**: Separate full pipeline (real-world) vs pure algorithm (optimization target)
 
 4. **Measure Everything**
+
    - Baseline performance (before)
    - Expected improvement (calculation)
    - Actual improvement (benchmark)
@@ -163,1445 +170,134 @@ Before implementing:
 
 ---
 
-## Critical WebAssembly Pitfalls
+## Critical WebAssembly Pitfalls (Tactical)
 
-> **⚠️ CRITICAL**: These mistakes were made in the initial Wasm implementation (2025-10-27). Read this section BEFORE writing any Wasm-related code.
+> **⚠️ Read BEFORE writing Wasm code**
 
-### Pitfall #1: Stack Allocations in WebAssembly 🔥
+**Never allocate >1KB on stack** - Use `@wasmMemoryGrow()` for heap (see wasm.zig)
 
-**THE MISTAKE**:
+**Use `u32` for all Wasm exports** (not `usize` - platform-dependent)
 
-```zig
-// ❌ FATAL ERROR - Will crash in browser!
-var memory_buffer: [100 * 1024 * 1024]u8 = undefined; // 100MB on stack
-var fba = std.heap.FixedBufferAllocator.init(&memory_buffer);
-```
+**Every function needs 2+ assertions** (Wasm debugging harder)
 
-**WHY IT FAILS**:
+**Log row/col/field for data errors** (generic codes useless)
 
-- WebAssembly stack limit: **1-2MB** (varies by browser)
-- This allocates 100MB on the stack → **instant stack overflow**
-- Code compiles fine, but crashes on first function call in browser
+**Never hardcode memory offsets in JS** (use `rozes_alloc`/`rozes_free_buffer`)
 
-**THE FIX**:
+**No redundant bounds checks after assertions**
 
-```zig
-// ✅ CORRECT - Use Wasm linear memory with @wasmMemoryGrow
-var heap_start: usize = undefined;
-var heap_size: usize = 0;
-const INITIAL_HEAP_PAGES: u32 = 1600; // 1600 pages × 64KB = 100MB
-
-fn initHeap() !void {
-    const current_pages = @wasmMemorySize(0);
-    const needed_pages = INITIAL_HEAP_PAGES;
-
-    if (current_pages < needed_pages) {
-        const grown = @wasmMemoryGrow(0, needed_pages - current_pages);
-        std.debug.assert(grown != @maxValue(u32)); // Growth succeeded
-    }
-
-    heap_start = current_pages * 64 * 1024; // 64KB per page
-    heap_size = needed_pages * 64 * 1024;
-
-    std.debug.assert(heap_start > 0);
-    std.debug.assert(heap_size >= 100 * 1024 * 1024);
-}
-```
-
-**RULE**: Never allocate >1KB on stack in WebAssembly. Use `@wasmMemoryGrow()` for heap.
+**Post-loop assertions MANDATORY**
 
 ---
 
-### Pitfall #2: Using `usize` in Wasm Exports 🔥
+### Wasm Checklist
 
-**THE MISTAKE**:
+- [ ] No stack >1KB, u32 pointers, 2+ assertions, post-loop assertions
+- [ ] Error context, exported alloc/free, no redundant checks, 8-byte alignment
 
-```zig
-// ❌ WRONG - usize is architecture-dependent
-export fn rozes_getColumnF64(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    out_ptr: *usize,  // ❌ wasm32 vs wasm64 difference!
-    out_len: *u32,
-) i32 {
-    out_ptr.* = @intFromPtr(data.ptr); // ❌ Changes size
-}
-```
+**Rule**: Correctness > Safety > Size > Speed
 
-**WHY IT FAILS**:
-
-- Tiger Style requires **explicit types** (not `usize`)
-- `usize` = 32-bit in wasm32, 64-bit in wasm64
-- JavaScript expects consistent pointer size
-- Memory layout breaks between architectures
-
-**THE FIX**:
-
-```zig
-// ✅ CORRECT - Explicit u32 for wasm32
-export fn rozes_getColumnF64(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    out_ptr: *u32,  // ✅ Explicit 32-bit
-    out_len: *u32,
-) i32 {
-    const ptr_val: u32 = @intCast(@intFromPtr(data.ptr));
-    out_ptr.* = ptr_val;
-
-    std.debug.assert(ptr_val != 0); // Non-null
-    std.debug.assert(out_len.* == @intCast(data.len)); // Verify
-}
-```
-
-**RULE**: Always use `u32` (not `usize`) for Wasm32 pointers and sizes.
-
----
-
-### Pitfall #3: Insufficient Assertions in Wasm Functions 🔥
-
-**THE MISTAKE**:
-
-```zig
-// ❌ WRONG - Only 1 assertion (Tiger Style requires 2+)
-fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
-    std.debug.assert(self.next_id < MAX_DATAFRAMES * 2); // Only 1!
-
-    var i: u32 = 0;
-    while (i < MAX_DATAFRAMES) : (i += 1) {
-        if (self.frames[i] == null) {
-            self.frames[i] = df;
-            self.next_id = i + 1;
-            return @intCast(i);
-        }
-    }
-    return error.TooManyDataFrames;
-}
-```
-
-**WHY IT FAILS**:
-
-- Tiger Style: **2+ assertions per function** (hard rule)
-- Missing: null pointer check, post-loop assertion
-- Wasm debugging is harder → need more assertions
-
-**THE FIX**:
-
-```zig
-// ✅ CORRECT - 3 assertions
-fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
-    std.debug.assert(self.next_id < MAX_DATAFRAMES * 2); // Pre-condition #1
-    std.debug.assert(df != @as(*DataFrame, @ptrFromInt(0))); // Pre-condition #2: Non-null
-
-    var i: u32 = 0;
-    while (i < MAX_DATAFRAMES) : (i += 1) {
-        if (self.frames[i] == null) {
-            self.frames[i] = df;
-            self.next_id = i + 1;
-            return @intCast(i);
-        }
-    }
-
-    std.debug.assert(i == MAX_DATAFRAMES); // Post-condition #3: Loop exhausted
-    return error.TooManyDataFrames;
-}
-```
-
-**RULE**: Every function needs **2+ assertions**. Post-loop assertions are mandatory.
-
----
-
-### Pitfall #4: Missing Error Context in Data Processing 🔥
-
-**THE MISTAKE**:
-
-```zig
-// ❌ WRONG - Silent error, no context
-df_ptr.* = parser.toDataFrame() catch |err| {
-    allocator.destroy(df_ptr);
-    return @intFromEnum(ErrorCode.fromError(err));
-    // User sees: "Error -2" ← USELESS!
-};
-```
-
-**WHY IT FAILS**:
-
-- CSV parsing fails at row 47,823 of 100K rows
-- User sees generic error code: `-2` (InvalidFormat)
-- **No row number, no column, no problematic data**
-- Hours wasted debugging
-
-**THE FIX**:
-
-```zig
-// ✅ CORRECT - Log error context with row/column
-df_ptr.* = parser.toDataFrame() catch |err| {
-    // Log BEFORE cleanup
-    std.log.err("CSV parsing failed: {} at row {} col {} - field: '{s}'", .{
-        err,
-        parser.current_row_index,
-        parser.current_col_index,
-        parser.current_field.items[0..@min(50, parser.current_field.items.len)],
-    });
-
-    allocator.destroy(df_ptr);
-    return @intFromEnum(ErrorCode.fromError(err));
-};
-```
-
-**REQUIRED**: Add to CSVParser:
-
-```zig
-pub const CSVParser = struct {
-    // ... existing fields
-    current_row_index: u32,   // ✅ ADD THIS
-    current_col_index: u32,   // ✅ ADD THIS
-    // ...
-};
-```
-
-**RULE**: Always log row/column numbers for data processing errors. Generic error codes are useless.
-
----
-
-### Pitfall #5: JavaScript Memory Layout Assumptions 🔥
-
-**THE MISTAKE**:
-
-```javascript
-// ❌ WRONG - Overwrites memory at offset 0!
-const csvPtr = 0; // Hardcoded offset 0
-const csvArray = new Uint8Array(wasm.memory.buffer);
-csvArray.set(csvBytes, csvPtr); // ❌ Destroys Wasm globals/stack!
-```
-
-**WHY IT FAILS**:
-
-- Wasm memory offset 0 contains globals and stack
-- Writing CSV data there **corrupts memory silently**
-- Hard to debug (intermittent crashes)
-
-**THE FIX**:
-
-```zig
-// 1. Export allocation functions in wasm.zig
-export fn rozes_alloc(size: u32) u32 {
-    std.debug.assert(size > 0);
-    std.debug.assert(size <= 1_000_000_000); // 1GB max
-
-    const allocator = getAllocator();
-    const mem = allocator.alloc(u8, size) catch return 0;
-
-    const ptr: u32 = @intCast(@intFromPtr(mem.ptr));
-    std.debug.assert(ptr != 0); // Non-null
-    return ptr;
-}
-
-export fn rozes_free_buffer(ptr: u32, size: u32) void {
-    std.debug.assert(ptr != 0);
-    std.debug.assert(size > 0);
-
-    const allocator = getAllocator();
-    const mem = @as([*]u8, @ptrFromInt(ptr))[0..size];
-    allocator.free(mem);
-}
-```
-
-```javascript
-// 2. Use in JavaScript
-const csvBytes = new TextEncoder().encode(csvText);
-const csvPtr = wasm.instance.exports.rozes_alloc(csvBytes.length);
-
-if (csvPtr === 0) {
-  throw new RozesError(ErrorCode.OutOfMemory, "Failed to allocate CSV buffer");
-}
-
-try {
-  const csvArray = new Uint8Array(wasm.memory.buffer, csvPtr, csvBytes.length);
-  csvArray.set(csvBytes);
-
-  const handle = wasm.instance.exports.rozes_parseCSV(
-    csvPtr,
-    csvBytes.length,
-    0,
-    0
-  );
-  checkResult(handle, "Failed to parse CSV");
-  return new DataFrame(handle, wasm);
-} finally {
-  wasm.instance.exports.rozes_free_buffer(csvPtr, csvBytes.length);
-}
-```
-
-**RULE**: Never write to hardcoded Wasm memory offsets. Always allocate via exported functions.
-
----
-
-### Pitfall #6: Redundant Bounds Checks After Assertions 🔴
-
-**THE MISTAKE**:
-
-```zig
-// ❌ WRONG - Redundant check after assertion
-fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
-    std.debug.assert(handle >= 0); // Assertion
-
-    if (handle < 0 or handle >= MAX_DATAFRAMES) return null; // ❌ Redundant!
-    const idx: u32 = @intCast(handle);
-    return self.frames[idx];
-}
-```
-
-**WHY IT FAILS**:
-
-- Wastes CPU cycles checking twice
-- Assertion already catches invalid handles in debug
-- Release builds skip assertions, so check is needed BUT should be first
-
-**THE FIX**:
-
-```zig
-// ✅ CORRECT - Assertions only (debug) or check only (release)
-fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
-    std.debug.assert(handle >= 0); // Pre-condition
-    std.debug.assert(handle < MAX_DATAFRAMES); // Bounds check
-
-    const idx: u32 = @intCast(handle); // Panics if out of range
-    const result = self.frames[idx];
-
-    std.debug.assert(result == null or @intFromPtr(result.?) != 0); // Post-condition
-    return result;
-}
-```
-
-**RULE**: Don't duplicate assertions with runtime checks. Use assertions in debug, rely on them in release.
-
----
-
-### Pitfall #7: Missing Post-Loop Assertions 🔴
-
-**THE MISTAKE**:
-
-```zig
-// ❌ WRONG - Loop finishes but no assertion
-var i: u32 = 0;
-while (i < MAX_DATAFRAMES) : (i += 1) {
-    if (self.frames[i] == null) {
-        self.frames[i] = df;
-        return @intCast(i);
-    }
-}
-// ❌ Missing: std.debug.assert(i == MAX_DATAFRAMES);
-return error.TooManyDataFrames;
-```
-
-**WHY IT FAILS**:
-
-- Tiger Style requires post-loop assertions
-- Verifies loop terminated correctly
-- Catches off-by-one errors
-
-**THE FIX**:
-
-```zig
-// ✅ CORRECT - Post-loop assertion
-var i: u32 = 0;
-while (i < MAX_DATAFRAMES) : (i += 1) {
-    if (self.frames[i] == null) {
-        self.frames[i] = df;
-        return @intCast(i);
-    }
-}
-std.debug.assert(i == MAX_DATAFRAMES); // ✅ Post-condition
-return error.TooManyDataFrames;
-```
-
-**RULE**: Every bounded loop needs a post-loop assertion verifying termination condition.
-
----
-
-### WebAssembly Checklist for Code Review
-
-Before committing any Wasm code, verify:
-
-- [ ] **No stack allocations >1KB** (use `@wasmMemoryGrow()`)
-- [ ] **All pointer types are `u32`** (not `usize`)
-- [ ] **Every function has 2+ assertions**
-- [ ] **Post-loop assertions on all bounded loops**
-- [ ] **Error logging includes row/column context**
-- [ ] **JavaScript allocates via exported functions** (not hardcoded offsets)
-- [ ] **No redundant bounds checks after assertions**
-- [ ] **Memory alignment validated** (8-byte for Float64/Int64)
-- [ ] **Check Wasm size after changes** (smaller is better)
-
-**If ANY checkbox is unchecked → DO NOT COMMIT.**
-
----
-
-### Pitfall #8: WebAssembly Binary Size Bloat 🟡
-
-**THE OBSERVATION** (2025-10-27):
-
-```bash
-# Before Tiger Style fixes
-zig-out/bin/rozes.wasm: 47KB (but crashed in browser)
-
-# After Tiger Style fixes
-zig-out/bin/rozes.wasm: 52KB (+5KB, but works correctly)
-```
-
-**WHY SIZE INCREASED**:
-Adding safety features increases code size:
-
-1. **Error logging code**: `std.log.err()` with string formatting (+2KB)
-2. **New exports**: `rozes_alloc()` and `rozes_free_buffer()` (+1KB)
-3. **Row/column tracking**: Additional fields and logic (+1KB)
-4. **Assertions**: 30+ new assertions add debug info (+1KB)
-
-**IMPORTANT TRADEOFF**:
-
-- ✅ **47KB binary** = crashes instantly (unusable)
-- ✅ **52KB binary** = works correctly with meaningful errors (usable)
-
-**Better is WORKING, not smaller!**
-
-**LESSON**: Binary size is a secondary concern compared to correctness:
-
-```
-Correctness > Safety > Size > Speed
-```
-
-**When to Optimize Size**:
-
-- ✅ After Tiger Style compliance is achieved
-- ✅ After all tests pass
-- ✅ Use `strip` and `wasm-opt` tools
-- ✅ Profile which functions are largest
-- ❌ NOT by removing assertions
-- ❌ NOT by removing error logging
-- ❌ NOT by sacrificing safety
-
-**Size Optimization Strategies** (for 0.2.0+):
-
-1. Use `wasm-opt -Oz` from Binaryen (can save 20-30%)
-2. Use `wasm-strip` to remove debug info (release builds only)
-3. Lazy-load rarely-used functions
-4. Use comptime to reduce runtime code
-5. Pool string constants
-
-**Acceptable Size Range**:
-
-- **MVP (0.1.0)**: 50-100KB is fine
-- **Production (0.2.0+)**: Target <80KB after optimization
-
-**DO NOT** sacrifice correctness for a few KB!
-
----
-
-### Pitfall #9: WASM Size Optimization Strategy 🟢
-
-**CURRENT STATUS** (2025-10-27):
-
-```bash
-# After Phase 1 optimizations
-zig-out/bin/rozes.wasm: 74 KB minified (~40 KB gzipped)
-
-# Competitive benchmark
-Papa Parse: 18.9 KB minified (6.8 KB gzipped)
-csv-parse: 28.4 KB minified (7.0 KB gzipped)
-
-# Target: <32 KB minified (<10 KB gzipped)
-```
-
-**OPTIMIZATION PHASES**:
-
-#### Phase 1: Build System (COMPLETED - 14% reduction)
-
-```bash
-# Before: 86 KB
-# After: 74 KB
-
-# What we did:
-1. Removed rozes_getColumnString stub (unimplemented)
-2. Added comptime conditional logging
-3. Integrated wasm-opt with --enable-bulk-memory
-```
-
-**Build Configuration** (`build.zig`):
-
-```zig
-// Development build: Debug mode, keep all logging
-const wasm_dev = b.addExecutable(.{
-    .optimize = .Debug,  // ~120 KB
-});
-
-// Production build: ReleaseSmall + wasm-opt
-const wasm_prod = b.addExecutable(.{
-    .optimize = .ReleaseSmall,  // Minimize size
-});
-
-// Run wasm-opt post-build
-const wasm_opt = b.addSystemCommand(&[_][]const u8{
-    "wasm-opt",
-    "-Oz",                      // Maximum size optimization
-    "--enable-bulk-memory",     // Required for Zig WASM
-    "--strip-debug",
-    "--strip-producers",
-    "--strip-dwarf",
-    "--converge",               // Repeat until no gains
-});
-```
+**Current**: 74KB (40KB gzip) → **Target**: 32KB (10KB gzip)
 
 **Commands**:
 
 ```bash
-# Production (optimized, 74 KB)
-zig build wasm
-
-# Development (debug, ~120 KB)
-zig build wasm-dev
+zig build wasm        # Production (74KB, ReleaseSmall + wasm-opt)
+zig build wasm-dev    # Debug (~120KB)
 ```
 
-**Comptime Conditional Logging** (`src/wasm.zig`):
+**Phases**:
 
-```zig
-const builtin = @import("builtin");
-const enable_logging = builtin.mode == .Debug;
-
-fn logError(comptime fmt: []const u8, args: anytype) void {
-    if (enable_logging) {
-        std.log.err(fmt, args);  // Only in debug builds
-    }
-}
-
-// Usage: Production builds strip out all logging strings
-logError("CSV parsing failed: {} at row {}", .{err, row_idx});
-```
-
-**Savings**: 2-3 KB (logging strings removed in release)
+- Phase 1 (DONE): Comptime logging, wasm-opt → 74KB
+- Phase 2: Dead code, string interning → 45KB
+- Phase 3: Debug-only assertions (keep 60-70%), lazy registry → 32KB
+- Phase 4 (if needed): FixedBufferAllocator, manual exports, LTO → <28KB
 
 ---
 
-#### Phase 2: Dead Code Elimination (NEXT - Target: 45 KB)
+## Tiger Style Learnings (Tactical Reference)
 
-**Remove Unused Exports**:
+> **🎯 Quick tactical patterns from production issues**
+
+### Core Patterns
+
+**Bounded Loops**: Always use explicit MAX + counter + post-assertion
 
 ```zig
-// ❌ BEFORE - Unimplemented function (adds ~1 KB)
-export fn rozes_getColumnString(...) i32 {
-    std.debug.assert(false);  // Not implemented
-    return @intFromEnum(ErrorCode.TypeMismatch);
-}
-
-// ✅ AFTER - Replaced with comment
-// NOTE: String column export deferred to 0.2.0
-// Browser tests use Int64/Float64/Bool columns only for MVP
+const MAX_ITERATIONS: u32 = 32;
+var i: u32 = 0;
+while (i < MAX_ITERATIONS and condition) : (i += 1) { }
+std.debug.assert(i == expected or i == MAX_ITERATIONS);
 ```
 
-**String Interning**:
+**2+ Assertions**: Simple getters still need 2 assertions
 
 ```zig
-// ❌ BEFORE - Duplicated error strings throughout code
-return @intFromEnum(ErrorCode.OutOfMemory);
-// ... 10 places with "Out of memory" string
-
-// ✅ AFTER - Single string table
-const ErrorMessages = struct {
-    pub const out_of_memory = "Out of memory";
-    pub const invalid_format = "Invalid format";
-};
-```
-
-**Expected**: 74 KB → 45 KB (40% reduction)
-
----
-
-#### Phase 3: Selective Assertions (Target: 32 KB)
-
-**Debug-Only Assertion Wrapper**:
-
-```zig
-fn debugAssert(condition: bool) void {
-    if (@import("builtin").mode == .Debug) {
-        std.debug.assert(condition);
-    }
-}
-```
-
-**Keep Safety-Critical Assertions**:
-
-```zig
-// ✅ KEEP in production (safety)
-std.debug.assert(idx < self.length);        // Bounds check
-std.debug.assert(handle >= 0);              // Null check
-std.debug.assert(self.delimiter != 0);      // Invariant
-
-// ✅ MAKE DEBUG-ONLY (verification)
-debugAssert(ptr_val != 0);                  // Redundant (checked above)
-debugAssert(i == MAX_DATAFRAMES);           // Obvious from loop
-debugAssert(@intFromPtr(result.?) != 0);    // Redundant pointer check
-```
-
-**Strategy**: Keep 60-70% of assertions (150-170 out of 248)
-
-**Lazy DataFrame Registry**:
-
-```zig
-// ❌ BEFORE - Always allocates 8 KB
-frames: [MAX_DATAFRAMES]?*DataFrame,  // 1000 × 8 bytes
-
-// ✅ AFTER - Grows as needed
-frames: std.ArrayList(?*DataFrame),
-// Start with capacity 4, grow on demand
-```
-
-**Expected**: 45 KB → 32 KB (30% reduction)
-
----
-
-#### Phase 4: Advanced Optimizations (IF NEEDED - Target: <28 KB)
-
-**FixedBufferAllocator** (replaces GeneralPurposeAllocator):
-
-```zig
-// ❌ BEFORE - GPA has thread-safety overhead (~5-8 KB)
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-// ✅ AFTER - Fixed buffer for WASM
-var fba: std.heap.FixedBufferAllocator = undefined;
-
-fn initAllocator() !void {
-    const pages_needed = (100 * 1024 * 1024) / (64 * 1024);
-    const grown = @wasmMemoryGrow(0, pages_needed);
-    std.debug.assert(grown != @maxValue(u32));
-
-    const heap_mem = @as([*]u8, @ptrFromInt(heap_start))[0..HEAP_SIZE];
-    fba = std.heap.FixedBufferAllocator.init(heap_mem);
-}
-```
-
-**Manual Export List** (disable rdynamic):
-
-```zig
-// ❌ BEFORE - Exports ALL functions marked 'export'
-wasm.rdynamic = true;
-
-// ✅ AFTER - Only export what's needed
-wasm.rdynamic = false;
-wasm.export_symbol_names = &[_][]const u8{
-    "rozes_parseCSV",
-    "rozes_getDimensions",
-    "rozes_getColumnF64",
-    "rozes_getColumnI64",
-    "rozes_free",
-    "rozes_alloc",
-    "rozes_free_buffer",
-};
-```
-
-**LTO (Link-Time Optimization)**:
-
-```zig
-wasm.want_lto = true;  // Cross-function optimization, 5-10% reduction
-```
-
-**Expected**: 32 KB → 28 KB (15% reduction)
-
----
-
-#### Size Optimization Checklist
-
-Before optimizing:
-
-- [ ] **Tiger Style compliance achieved** (all tests pass)
-- [ ] **Correctness verified** (browser tests work)
-- [ ] **Performance targets met** (100K rows <1s)
-
-Optimization order:
-
-- [ ] Phase 1: Build system + comptime logging ✅ DONE (86 KB → 74 KB)
-- [ ] Phase 2: Dead code removal (Target: 45 KB)
-- [ ] Phase 3: Selective assertions + lazy registry (Target: 32 KB)
-- [ ] Phase 4: Advanced optimizations (IF >32 KB still)
-
-**Success Metrics**:
-| Phase | Size | vs Papa Parse | vs csv-parse | Status |
-|-------|------|---------------|--------------|--------|
-| Current | 74 KB | 3.9x | 2.6x | 🟡 Need optimization |
-| Phase 2 | 45 KB | 2.4x | 1.6x | 🟡 Acceptable MVP |
-| Phase 3 | 32 KB | 1.7x | 1.1x | 🟢 **Competitive** |
-| Phase 4 | 28 KB | 1.5x | 1.0x | 🟢 Good |
-
-**Gzipped (what users download)**:
-
-- 74 KB → ~40 KB gzipped (5.9x vs Papa Parse 6.8 KB)
-- 32 KB → ~10 KB gzipped (1.5x vs Papa Parse) ✅ **Target**
-
-**RULE**: Don't optimize until Phase 1 complete. Don't sacrifice safety for size.
-
----
-
-## Tiger Style Learnings from 0.2.0 & 0.3.0 Implementation
-
-> **🎯 UPDATED (2025-10-28)**: Critical learnings from implementing string support & sort operations.
-
-### Learning #1: Buffer Growth Loops MUST Be Bounded 🔥
-
-**Violation**: Unbounded `while (new_size < needed_size) { new_size *= 2; }` allows infinite loops on overflow or malicious input.
-
-**Solution**: Use explicit MAX constant, counter, post-assertion:
-
-```zig
-const MAX_BUFFER_GROWTH_ITERATIONS: u32 = 32;
-var growth_iterations: u32 = 0;
-while (new_size < needed_size and growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS) : (growth_iterations += 1) {
-    new_size = @min(new_size * 2, MAX_BUFFER_SIZE);
-}
-std.debug.assert(growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS or new_size >= needed_size);
-```
-
----
-
-### Learning #2: Simple Functions Need Creative Assertions 🔥
-
-**Violation**: Single assertion in getter (Tiger Style requires 2+).
-
-**Solutions** (pick appropriate pattern):
-
-- **Pattern A**: Input + output assertions
-- **Pattern B**: Invariant + type check
-- **Pattern C**: Runtime + comptime assertion
-
-```zig
-// ✅ Example: Assert invariant + non-null pointer
+pub fn isEmpty(self: Series) bool {
 std.debug.assert(self.length <= MAX_ROWS);
 std.debug.assert(@intFromPtr(self) != 0);
-```
-
----
-
-### Learning #3: Function Length - The 70-Line Hard Limit 🔥
-
-**Violation**: Functions >70 lines must be split by responsibility.
-
-**Approach**: Extract type-specific helpers
-
-```zig
-// Main orchestration ≤70 lines
-fn fillDataFrame(...) !void {
-    for (df.columns, 0..) |*col, idx| {
-        switch (column_types[idx]) {
-            .Int64 => try fillInt64Column(col, rows, idx),
-            .Float64 => try fillFloat64Column(col, rows, idx),
-            // ...
-        }
-    }
-}
-
-// Type-specific helpers ≤40 lines each
-fn fillInt64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !void {
-    // ...
+    return self.length == 0;
 }
 ```
 
-**Benefits**: Single responsibility, testable, reusable.
+**Function Length**: >70 lines → extract type-specific helpers
 
----
-
-### Learning #4: Error Context is Data Integrity 🔥
-
-**Violation**: Silent errors with generic codes (user sees "Error -2", no context).
-
-**Solution**: Log row, column name, field value:
+**Error Context**: Log row/col/field for data errors
 
 ```zig
-buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch |err| {
-    std.log.err("Parse failed at row {}, col {} ('{s}'): field='{s}' - {}",
-        .{row_idx, col_idx, df.columns[col_idx].name, row[col_idx], err});
+catch |err| {
+    std.log.err("Parse failed at row {}, col '{}': field='{}' - {}",
+        .{row_idx, col_name, field, err});
     return error.TypeMismatch;
-};
+}
 ```
 
-**Example output**: `Parse failed at row 47823, col 3 ('price'): field='$19.99' - InvalidCharacter`
+### Data Processing
 
-User fixes issue immediately instead of hours debugging.
+**Type Inference**: Default to String (universal fallback), never error
 
----
-
-### Learning #5: String Operations Need Performance Notes 🔥
-
-**Violation**: Undocumented performance characteristics.
-
-**Solution**: Document complexity, growth strategy, optimization hints:
-
-````zig
-/// Appends string value to series
-///
-/// **Performance**: O(n log n) worst case, O(n) amortized (exponential 2× growth)
-/// **Optimization**: Pre-allocate with estimated capacity:
-/// ```zig
-/// const col = try StringColumn.init(allocator,
-///     estimated_capacity, estimated_buffer_size);
-/// ```
-pub fn appendString(...) !void
-````
-
----
-
-### Learning #6: WASM Size Optimization - Low-Hanging Fruit 🔥
-
-**Discovery**: 102 KB → 74 KB (27% reduction) with simple optimizations.
-
-**Techniques**:
-
-1. **String interning**: Deduplicate error messages (~2 KB)
-2. **Conditional logging**: Strip in release builds (~3 KB)
-3. **Inline hot paths**: Small frequently-called functions (~1 KB)
-4. **Lazy allocation**: ArrayList instead of fixed arrays (~8 KB)
-5. **Conditional assertions**: Debug-only where safe (~500 bytes)
-
-**Rule**: Apply low-hanging fruit first. Don't sacrifice safety for size.
-
----
-
-### Learning #7: Type Inference - Default to String, Not Error 🔥
-
-**Discovery**: Conformance jumped from 17% → 97% by defaulting to String instead of erroring.
-
-**Pattern**:
+**NaN Handling**: Check before comparison/aggregation
 
 ```zig
-fn inferColumnType(...) ValueType {
-    // Try Bool, Int64, Float64 first
-    if (all_bool) return .Bool;
-    if (all_int) return .Int64;
-    if (all_float) return .Float64;
-
-    return .String; // ✅ Universal fallback, no error
+if (std.math.isNan(a) or std.math.isNan(b)) {
+    // Handle NaN explicitly
 }
 ```
 
-**Key insight**: String is universal fallback - preserves all data, never rejects valid CSV.
-
----
-
-### Learning #8: Test Coverage - 85% is Good, But Know the Gaps 🔥
-
-**Achievement**: 83 tests, 85% coverage, 97% conformance.
-
-**Known gaps** (15% uncovered):
-
-1. **Error recovery paths** (~5%): Buffer/registry limits, UTF-8 validation failures
-2. **Edge case combinations** (~5%): MAX_COLUMNS, u32 max rows, extreme data
-3. **WASM-specific paths** (~3%): Memory growth failures, encoding edge cases
-4. **Comptime assertions** (~2%): Struct size/alignment checks
-
-**Rule**: 85% excellent for MVP. Document gaps, add stress tests later.
-
----
-
-### Learning #9: IEEE 754 NaN Handling - The Silent Killer 🔥
-
-**Discovery**: `std.math.order(a, b)` panics on NaN, crashing sort operations.
-
-**Problem**: NaN common in real data (sensor failures, 0/0, data import errors). One NaN crashes 1M-row sort.
-
-**Solution**: Check NaN before comparison:
+**Overflow Checks**: Check BEFORE arithmetic using wider type
 
 ```zig
-.Float64 => blk: {
-    const a = data[idx_a];
-    const b = data[idx_b];
-
-    const a_is_nan = std.math.isNan(a);
-    const b_is_nan = std.math.isNan(b);
-
-    if (a_is_nan and b_is_nan) {
-        break :blk std.math.order(idx_a, idx_b); // Preserve order
-    } else if (a_is_nan) {
-        break :blk .gt; // NaN sorts to end
-    } else if (b_is_nan) {
-        break :blk .lt;
-    } else {
-        break :blk std.math.order(a, b); // Normal comparison
-    }
-}
+const result_u64: u64 = a_u64 * b_u64;
+if (result_u64 > MAX) return error.Overflow;
+const result: u32 = @intCast(result_u64);
 ```
 
-**When to check**: Comparisons (sort, min, max), aggregations, type inference, export.
+**Performance Docs**: Document O(n), memory, typical speed, optimization tips
 
-**Impact**: 112/113 tests → 113/113 tests. Production-ready.
+### Tiger Style Violations
 
-### Learning #10: For-Loops Over Runtime Data are Tiger Style Violations 🔥
-
-**Discovery**: 6 unbounded for-loops found in new modules - all over user-controlled data.
-
-**Violation**: `for (items) |item|` over runtime collections (categories, strings, columns, rows).
-
-**Risk**: Malicious input triggers unbounded iteration (1M categories, GB strings, 100K columns).
-
-**Solution**: Bounded while loops with MAX constant:
+**For-Loops**: NEVER over runtime data (use bounded while loops)
 
 ```zig
-// ✅ CORRECT
-std.debug.assert(items.len <= MAX_ITEMS);
-
-var i: u32 = 0;
-while (i < MAX_ITEMS and i < items.len) : (i += 1) {
-    // process items[i]
-}
-std.debug.assert(i == items.len);
+// ❌ for (items) |item|
+// ✅ while (i < MAX and i < items.len) : (i += 1)
 ```
 
-**When for-loops OK**:
+**HashMap Iterators**: Bound with MAX_ITERATIONS
 
-- ✅ Comptime iteration: `comptime for (type_list) |T|`
-- ✅ Fixed arrays: `for ([_]ValueType{.Int64, .Float64}) |t|`
-- ❌ Runtime data: `for (df.columns)`, `for (rows)`, `for (str, 0..)`
+**Post-Loop Assertions**: MANDATORY for every bounded loop
 
-**Detection**: `grep -n "for.*|" src/**/*.zig | grep -v "comptime"`
+**usize**: Use u32 for indices/counters (platform-independent)
 
-**Impact**: 6 violations fixed → 0 unbounded loops.
+**Assertions Scale**: 1 per 20 lines (76 lines = 5 assertions)
 
----
+### Quick Wins
 
-### Learning #11: For-Loops in Aggregations Need Explicit Bounds 🔥
+**WASM Size**: String interning, comptime logging, lazy allocation, inline hot paths
 
-**Discovery**: 9 unbounded for-loops in groupBy/join operations.
+**Test Coverage**: 85% good for MVP, document gaps
 
-**Risk**: Large groups (1M rows with same key) or join collisions (100K matches) trigger unbounded iteration.
-
-**Pattern**: Same as Learning #10 - replace with bounded while loops.
-
-**Special case - join collision handling**:
-
-```zig
-var entry_idx: u32 = 0;
-while (entry_idx < MAX_MATCHES_PER_KEY and entry_idx < entries.len) : (entry_idx += 1) {
-    // process match
-}
-
-if (entry_idx >= MAX_MATCHES_PER_KEY and entry_idx < entries.len) {
-    std.log.warn("Join truncated: {} matches (limit {})",
-        .{entries.len, MAX_MATCHES_PER_KEY});
-}
-```
-
-**Impact**: 9 violations fixed in groupby.zig (3) and join.zig (6).
-
----
-
-### Learning #12: NaN Handling in Pivot/Aggregation Operations 🔥
-
-**Discovery**: Pivot fills missing combinations with NaN BUT rejects NaN in source data (inconsistency).
-
-**Problem**: Real-world datasets contain NaN (sensor failures, 0/0, missing imports). Pivot should handle gracefully.
-
-**Solution**: Use 0.0 instead of NaN for missing combinations (consistent with aggregation semantics):
-
-```zig
-// ✅ CORRECT - Consistent NaN handling
-const value = if (result.cells.get(cell_hash)) |cell|
-    cell.getAggregate(aggfunc)
-else
-    0.0;  // ✅ Missing combination = zero contribution
-
-std.debug.assert(!std.math.isNan(value)); // Post-condition
-```
-
-**Validation**: Reject NaN in source data with clear error:
-
-```zig
-fn getNumericValueAtRow(series: *const Series, row_idx: u32) !f64 {
-    const result = switch (series.value_type) {
-        .Float64 => series.data.Float64[row_idx],
-        // ...
-    };
-
-    if (std.math.isNan(result)) {
-        std.log.err("Pivot source data contains NaN at row {} - not supported", .{row_idx});
-        return error.NanValueNotSupported;
-    }
-
-    std.debug.assert(!std.math.isNan(result)); // Post-condition
-    return result;
-}
-```
-
-**Impact**: Prevents production crashes from NaN data, consistent aggregation behavior.
-
----
-
-### Learning #13: Post-Loop Assertions are Mandatory 🔥
-
-**Discovery**: 15+ loops missing post-condition assertions (Tiger Style requirement).
-
-**Problem**: Loop termination not verified, off-by-one errors undetected.
-
-**Pattern**: Every bounded loop MUST assert termination condition:
-
-```zig
-// ✅ CORRECT - Post-loop assertion
-var row_idx: u32 = 0;
-while (row_idx < df.row_count and row_idx < MAX_ROWS) : (row_idx += 1) {
-    // ... process row
-}
-std.debug.assert(row_idx == df.row_count or row_idx == MAX_ROWS); // ✅ Mandatory
-
-// For nested loops - assert EACH level
-var col_idx: u32 = 0;
-while (col_idx < MAX_COLS and col_idx < df.columns.len) : (col_idx += 1) {
-    var row_idx: u32 = 0;
-    while (row_idx < MAX_ROWS and row_idx < df.row_count) : (row_idx += 1) {
-        // ...
-    }
-    std.debug.assert(row_idx == df.row_count or row_idx == MAX_ROWS); // ✅ Inner
-}
-std.debug.assert(col_idx == df.columns.len or col_idx == MAX_COLS); // ✅ Outer
-```
-
-**Impact**: 15+ missing assertions added, full Tiger Style compliance.
-
----
-
-### Learning #14: Inconsistent NaN Handling is a Production Killer 🔥
-
-**Discovery** (0.6.0 Review): Pivot rejects NaN in source data but fills missing combinations with 0.0.
-
-**Problem**: Real sensor/financial data contains NaN (0/0, sensor failures, data import errors). Inconsistent handling causes:
-- Production crashes when users pivot sensor data
-- Silent data loss (0.0 vs NaN are semantically different)
-- Non-compliance with IEEE 754 null semantics
-
-**Root Cause**: Fear of NaN propagation vs need for explicit missing values.
-
-**Solution**: Use IEEE 754 NaN consistently, check before aggregation:
-
-```zig
-// ✅ CORRECT - Accept NaN, warn user, handle in aggregation
-fn getNumericValueAtRow(series: *const Series, row_idx: u32) !f64 {
-    const result = switch (series.value_type) {
-        .Float64 => series.data.Float64[row_idx],
-        // ...
-    };
-
-    // Accept NaN but warn (data integrity audit trail)
-    if (std.math.isNan(result)) {
-        std.log.warn("NaN detected at row {} - will be excluded from aggregation", .{row_idx});
-        // ✅ Return NaN, let caller decide how to handle
-    }
-
-    return result;
-}
-
-// Aggregation: Skip NaN values explicitly
-pub fn getAggregate(self: *const PivotCell, func: AggFunc) f64 {
-    // If all values were NaN, count=0, return NaN
-    if (self.count == 0) return std.math.nan(f64);
-
-    const result = switch (func) {
-        .Sum => self.sum, // Sum already excludes NaN (addValue checks)
-        .Mean => self.sum / @as(f64, @floatFromInt(self.count)),
-        // ...
-    };
-
-    std.debug.assert(!std.math.isNan(result) or self.count == 0); // Post-condition
-    return result;
-}
-
-// Missing combinations: Use NaN, not 0.0
-const value = if (result.cells.get(cell_hash)) |cell|
-    cell.getAggregate(aggfunc)
-else
-    std.math.nan(f64); // ✅ Explicit missing value marker
-```
-
-**Where to Check NaN**:
-- ✅ Comparisons (sort, min, max) - use `std.math.isNan()` before `std.math.order()`
-- ✅ Aggregations (sum, mean) - skip NaN in accumulation
-- ✅ Type inference - detect Float64 even with NaN present
-- ✅ Export - handle NaN → "NaN" string in CSV
-
-**Impact**: 0.6.0 pivot works with real sensor data, no production crashes.
-
----
-
-### Learning #15: Overflow Checks Before Cast, Not After 🔥
-
-**Discovery** (0.6.0 Review): Melt calculates `result_row_count = df.row_count * melt_columns.len` then checks overflow.
-
-**Problem**: Multiplication overflows u32 silently → wraps to small number → checks pass → OOM crash.
-
-**Pattern**: Check overflow BEFORE arithmetic operations:
-
-```zig
-// ❌ WRONG - Check after overflow already happened
-const result_row_count: u32 = df.row_count * @as(u32, @intCast(melt_columns.len));
-if (result_row_count > MAX_INDEX_VALUES) { // Too late!
-    return error.MeltResultTooLarge;
-}
-
-// ✅ CORRECT - Check before multiplication using wider type
-const melt_col_count: u64 = melt_columns.len;
-const row_count_u64: u64 = df.row_count;
-const result_row_count_u64 = row_count_u64 * melt_col_count;
-
-if (result_row_count_u64 > MAX_INDEX_VALUES) {
-    std.log.err("Melt would create {} rows (max {})", .{result_row_count_u64, MAX_INDEX_VALUES});
-    return error.MeltResultTooLarge;
-}
-
-const result_row_count: u32 = @intCast(result_row_count_u64);
-```
-
-**Common Overflow Scenarios**:
-- DataFrame operations: `row_count * col_count` (reshape, transpose)
-- Cartesian products: `left_rows * right_rows` (cross join)
-- Aggregations: `sum += huge_value` (check for inf)
-- Index calculations: `start_idx + offset` (bounds check first)
-
-**Impact**: User melts 100K × 1000 → 100M rows overflows to 5K → allocate 5K → immediate OOM when filling data.
-
----
-
-### Learning #16: Performance Documentation is Data Integrity 🔥
-
-**Discovery** (0.6.0 Review): Reshape operations lack O(n) complexity and memory requirements documentation.
-
-**Problem**: Users call expensive operations on large datasets without understanding cost:
-- Pivot 10M rows × 10K unique values → 5 minute hang → browser kill
-- Transpose 1M × 1M → 1TB memory allocation → OOM
-- No warning, no sampling option, no escape hatch
-
-**Data Processing Reality**: DataFrame users need to understand:
-- Computational complexity (O(n), O(n²), O(n × m))
-- Memory requirements (O(1), O(n), O(n × m))
-- Typical performance (100K rows → X seconds)
-- When to sample/filter first
-
-**Solution**: Add performance notes to ALL DataFrame operations:
-
-```zig
-/// Transform DataFrame from long format to wide format (pivot table)
-///
-/// **Performance**:
-/// - Time Complexity: O(n × m) where n = rows, m = unique pivot values
-/// - Space Complexity: O(i × c) where i = unique index values, c = unique column values
-/// - Typical: 100K rows × 100 unique values → ~500ms
-/// - Worst Case: 1M rows × 1K unique values → ~50 seconds
-///
-/// **Warning**: Avoid pivoting high-cardinality columns (>1000 unique values).
-/// Result DataFrame size = (unique index values) × (unique column values).
-///
-/// **Optimization Tips**:
-/// 1. Pre-filter data to reduce row count before pivoting
-/// 2. Use Categorical type for low-cardinality pivot columns (10× faster)
-/// 3. Consider sampling for exploratory analysis (previewRows option)
-/// 4. For >10K unique values, use aggregation without pivoting
-///
-/// Example:
-/// ```zig
-/// // Fast: 100K rows, 50 regions → 2K result rows
-/// const pivoted = try df.pivot(allocator, .{
-///     .index = "date",
-///     .columns = "region",  // 50 unique values
-///     .values = "sales",
-///     .aggfunc = .sum,
-/// });
-///
-/// // Slow: 100K rows, 10K products → 100K result rows (no aggregation!)
-/// const bad_pivot = try df.pivot(allocator, .{
-///     .index = "date",
-///     .columns = "product_id",  // ⚠️ 10K unique values!
-///     .values = "sales",
-/// });
-/// ```
-pub fn pivot(...) !DataFrame {
-```
-
-**Impact**: Users avoid expensive operations, or pre-filter/sample data first → no production hangs.
-
----
-
-### Learning #17: HashMap Iterator Loops MUST Be Bounded 🔥
-
-**Discovery** (Phase 1-3 Review): 5 unbounded HashMap iterator loops found across codebase.
-
-**Violation**: `while (iter.next()) |entry|` has no explicit MAX constant or bounds check.
-
-**Risk**: Corrupted HashMap could iterate indefinitely → infinite loop, OOM, data corruption.
-
-**Solution**: Bounded iterator with post-assertion:
-
-```zig
-// ❌ WRONG: Unbounded iterator
-var iter = counts.iterator();
-var idx: u32 = 0;
-while (iter.next()) |entry| {
-    pairs[idx] = entry;
-    idx += 1;
-}
-
-// ✅ CORRECT: Bounded with explicit limit
-var iter = counts.iterator();
-var idx: u32 = 0;
-const MAX_ITERATIONS: u32 = 10_000; // Reasonable limit for unique values
-while (iter.next()) |entry| : (idx += 1) {
-    std.debug.assert(idx < MAX_ITERATIONS); // Bounds check
-    pairs[idx] = entry;
-}
-std.debug.assert(idx <= MAX_ITERATIONS); // Post-condition
-```
-
-**When to use**:
-- HashMap/AutoHashMap iterator loops
-- Any iterator over runtime data collections
-- Container iteration where size is user-controlled
-
-**Impact**: 5 violations fixed across parallel_parser.zig (2), stats.zig (2), join.zig (1).
-
----
-
-### Learning #18: For-Loops Over Runtime Collections Are Violations 🔥
-
-**Discovery** (Phase 1-3 Review): 6 for-loops over runtime data found - all Tiger Style violations.
-
-**Violation**: `for (items) |item|` over user-controlled collections (partitions, entries, write_offsets).
-
-**Risk**: Malicious input triggers unbounded iteration (1M partitions, corrupted arrays).
-
-**Solution**: Replace with bounded while loops:
-
-```zig
-// ❌ WRONG: For-loop over runtime data
-for (write_offsets, 0..) |offset, partition_idx| {
-    const expected_end = ctx.partitions[partition_idx].start +
-                        ctx.partitions[partition_idx].count;
-    std.debug.assert(offset == expected_end);
-}
-
-// ✅ CORRECT: Bounded while loop with MAX constant
-var partition_idx: u32 = 0;
-while (partition_idx < PARTITION_COUNT) : (partition_idx += 1) {
-    const expected_end = ctx.partitions[partition_idx].start +
-                        ctx.partitions[partition_idx].count;
-    std.debug.assert(write_offsets[partition_idx] == expected_end);
-}
-std.debug.assert(partition_idx == PARTITION_COUNT); // Post-condition
-```
-
-**When for-loops are OK**:
-- ✅ Comptime iteration: `comptime for (type_list) |T|`
-- ✅ Fixed arrays: `for ([_]ValueType{.Int64, .Float64}) |t|`
-- ❌ Runtime data: `for (df.columns)`, `for (rows)`, `for (partitions)`
-
-**Detection**: `grep -n "for.*|" src/**/*.zig | grep -v "comptime"`
-
-**Impact**: 6 violations fixed in radix_join.zig (3), join.zig (3).
-
----
-
-### Learning #19: NaN Handling in Comparisons is Mandatory 🔥
-
-**Discovery** (Phase 1-3 Review): Float64 sort operations panic on NaN instead of handling gracefully.
-
-**Problem**: `std.math.order(a, b)` panics when encountering NaN → production crashes.
-
-**Real-World Impact**: Sensor data, financial data, data imports often contain NaN (0/0, sensor failures).
-
-**Solution**: Check NaN before comparison:
-
-```zig
-// ❌ CRITICAL: Panics on NaN input
-std.mem.sort(IndexValue, pairs, {}, struct {
-    fn lessThan(_: void, a: IndexValue, b: IndexValue) bool {
-        return a.value < b.value; // ☠️ PANICS IF NaN
-    }
-}.lessThan);
-
-// ✅ CORRECT: NaN-safe comparison
-std.mem.sort(IndexValue, pairs, {}, struct {
-    fn lessThan(_: void, a: IndexValue, b: IndexValue) bool {
-        const a_is_nan = std.math.isNan(a.value);
-        const b_is_nan = std.math.isNan(b.value);
-
-        if (a_is_nan and b_is_nan) return false; // Both NaN: equal (stable sort)
-        if (a_is_nan) return false; // a is NaN, sorts to end (a > b)
-        if (b_is_nan) return true;  // b is NaN, sorts to end (a < b)
-
-        return a.value < b.value; // Normal comparison
-    }
-}.lessThan);
-```
-
-**Where to check**:
-- ✅ Comparisons (sort, min, max) - use `std.math.isNan()` before `std.math.order()`
-- ✅ Aggregations (sum, mean) - skip NaN in accumulation
-- ✅ Type inference - detect Float64 even with NaN present
-- ✅ Export - handle NaN → "NaN" string in CSV
-
-**Impact**: 2 violations fixed in stats.zig (rank, percentileRank).
-
----
-
-### Learning #20: usize is Platform-Dependent - Use u32 🔥
-
-**Discovery** (Phase 1-3 Review): 15 uses of `usize` for iteration counters found in SIMD code.
-
-**Problem**: `usize` changes size between wasm32 (32-bit) and wasm64 (64-bit) → platform-dependent behavior.
-
-**Tiger Style Requirement**: Use explicit types (u32) for consistent cross-platform behavior.
-
-**Solution**:
-
-```zig
-// ❌ WRONG: Architecture-dependent size
-var i: usize = 0;
-const simd_width = 2;
-
-while (i + simd_width <= data_a.len) {
-    // ... SIMD operations
-    i += simd_width;
-}
-
-// ✅ CORRECT: Explicit u32 with bounds check
-var i: u32 = 0;
-const simd_width: u32 = 2;
-const data_len: u32 = @intCast(data_a.len);
-
-std.debug.assert(data_len <= 1_000_000_000); // Pre-condition: Reasonable limit
-
-while (i + simd_width <= data_len and iterations < MAX_ITERATIONS) : (iterations += 1) {
-    // ... SIMD operations
-    i += simd_width;
-}
-
-std.debug.assert(i <= data_len); // Post-condition
-```
-
-**When to use usize**:
-- ❌ Loop counters (use u32)
-- ❌ Array indices (use u32)
-- ❌ Data sizes (use u32 for DataFrame operations)
-- ✅ Memory offsets (pointer arithmetic only)
-
-**Impact**: 15 violations found in simd.zig - needs fixing for WebAssembly consistency.
-
----
-
-### Learning #21: Assertions Scale With Function Complexity 🔥
-
-**Discovery** (Phase 1-3 Review): `JoinKey.compute()` is 76 lines but only has 2 assertions.
-
-**Rule**: Complex functions (>50 lines, multiple branches) need proportionally more assertions.
-
-**Pattern**: At least 1 assertion per 20 lines of code:
-- 0-20 lines: 2 assertions minimum (Tiger Style baseline)
-- 21-40 lines: 3 assertions (add loop invariant)
-- 41-60 lines: 4 assertions (add intermediate state checks)
-- 61-80 lines: 5+ assertions (add per-branch validation)
-
-**Solution for `JoinKey.compute()`**:
-
-```zig
-pub fn compute(
-    row_idx: u32,
-    col_cache: []const ColumnCache,
-) !JoinKey {
-    std.debug.assert(col_cache.len > 0); // Pre-condition #1
-    std.debug.assert(col_cache.len <= MAX_JOIN_COLUMNS); // Pre-condition #2
-    std.debug.assert(row_idx < std.math.maxInt(u32)); // Pre-condition #3 ✅ NEW
-
-    const FNV_OFFSET: u64 = 14695981039346656037;
-    const FNV_PRIME: u64 = 1099511628211;
-    var hash: u64 = FNV_OFFSET;
-
-    var col_idx: u32 = 0;
-    while (col_idx < MAX_JOIN_COLUMNS and col_idx < col_cache.len) : (col_idx += 1) {
-        std.debug.assert(col_idx < col_cache.len); // Loop invariant ✅ NEW
-
-        const cached_col = col_cache[col_idx];
-        // ... hashing logic for each type
-    }
-
-    std.debug.assert(col_idx == col_cache.len); // Post-condition #1
-    std.debug.assert(hash != FNV_OFFSET); // Post-condition #2: Hash modified ✅ NEW
-
-    return JoinKey{
-        .hash = hash,
-        .row_idx = row_idx,
-    };
-}
-```
-
-**Result**: 2 → 5 assertions (matches 76-line complexity).
-
-**Impact**: Missing invariant checks identified in join.zig `JoinKey.compute()`.
-
----
-
-### Learning #22: Shallow Copy Requires Lifetime Documentation 🔥
-
-**Discovery** (0.6.0 Review): Categorical columns use shallow copy (shared dictionary) but lifetime contract isn't documented.
-
-**Problem**: User code frees source DataFrame before using join result → use-after-free:
-
-```zig
-// ❌ DANGEROUS - Source freed before result used
-const joined = try left.innerJoin(allocator, &temp_right, &[_][]const u8{"id"});
-temp_right.deinit(); // ☠️ FREED - Categorical dictionary now dangling pointer!
-
-const cat_col = joined.column("category_right").?; // ☠️ USE-AFTER-FREE
-```
-
-**Tiger Style Requirement**: All lifetime contracts MUST be documented in public API.
-
-**Solution**: Document in function header with safe pattern:
-
-```zig
-/// Performs inner join between two DataFrames
-///
-/// **IMPORTANT - Lifetime Requirement**:
-/// Source DataFrames (`left` and `right`) MUST outlive the returned DataFrame
-/// when using Categorical columns. This is because Categorical columns use
-/// shallow copy (shared dictionary) for performance (80-90% faster joins).
-///
-/// **Why**: Categorical columns store a pointer to the category dictionary.
-/// Freeing source DataFrames invalidates these pointers → use-after-free.
-///
-/// **Safe Pattern**:
-/// ```zig
-/// var left = try loadData("left.csv");
-/// var right = try loadData("right.csv");
-/// var joined = try left.innerJoin(allocator, &right, &[_][]const u8{"id"});
-///
-/// // Use joined...
-///
-/// // ✅ CORRECT ORDER: Free result BEFORE sources
-/// joined.deinit();
-/// right.deinit(); // ✅ Free after result
-/// left.deinit();  // ✅ Free after result
-/// ```
-///
-/// **Unsafe Pattern**:
-/// ```zig
-/// var temp = try loadData("temp.csv");
-/// var joined = try left.innerJoin(allocator, &temp, &[_][]const u8{"id"});
-/// temp.deinit(); // ❌ DANGER - Use-after-free if joined has Categorical columns!
-/// ```
-///
-/// **Performance vs Safety**:
-/// - Shallow copy: 80-90% faster joins (740ms → 100ms for 10K×10K)
-/// - Deep copy: 100% safe but slower (use if source lifetime uncertain)
-///
-/// See: `src/core/categorical.zig` for shallow vs deep copy details
-pub fn innerJoin(...) !DataFrame {
-```
-
-**Impact**: Users write safe code, avoid intermittent segfaults.
-
----
+**Lifetime Contracts**: Document shallow copy requirements in API docs
 
 ## Source Organization
 
@@ -2004,16 +700,19 @@ Rozes provides a complete DataFrame library for Node.js through WebAssembly bind
 When implementing new features (like SIMD aggregations), follow this checklist:
 
 #### 1. **Implement in Zig** (`src/core/`)
+
 - Write the core functionality in Zig
 - Follow Tiger Style (2+ assertions, bounded loops, ≤70 lines)
 - Add unit tests
 
 #### 2. **Export from Wasm** (`src/wasm.zig`)
+
 - Add Wasm export function with C ABI
 - Handle memory passing (pointers, lengths)
 - Return results via Wasm memory
 
 **Example** (SIMD aggregation):
+
 ```zig
 // src/wasm.zig
 export fn df_sum_simd(df_ptr: [*]const u8, df_len: usize, col_name_ptr: [*]const u8, col_name_len: usize) f64 {
@@ -2030,11 +729,13 @@ export fn df_sum_simd(df_ptr: [*]const u8, df_len: usize, col_name_ptr: [*]const
 ```
 
 #### 3. **Wrap in JavaScript** (`js/rozes.js`)
+
 - Create a user-friendly JavaScript API
 - Handle type conversions (JS ↔ Wasm)
 - Add JSDoc comments for TypeScript support
 
 **Example**:
+
 ```javascript
 // js/rozes.js
 class DataFrame {
@@ -2056,11 +757,13 @@ class DataFrame {
 ```
 
 #### 4. **Add TypeScript Types** (`dist/index.d.ts`)
+
 - Export types for all new methods
 - Document parameters and return types
 - Add JSDoc examples
 
 **Example**:
+
 ```typescript
 // dist/index.d.ts
 export class DataFrame {
@@ -2078,31 +781,34 @@ export class DataFrame {
 ```
 
 #### 5. **Add Node.js Tests** (`src/test/nodejs/`)
+
 - Test the JavaScript API
 - Verify correctness against Zig tests
 - Test edge cases (empty data, NaN, etc.)
 
 **Example**:
+
 ```javascript
 // src/test/nodejs/aggregation_test.js
-const { DataFrame } = require('../../js/rozes');
+const { DataFrame } = require("../../js/rozes");
 
-describe('DataFrame.sum()', () => {
-  it('computes sum with SIMD', () => {
-    const df = DataFrame.fromCSV('value\n10\n20\n30\n');
-    const result = df.sum('value');
+describe("DataFrame.sum()", () => {
+  it("computes sum with SIMD", () => {
+    const df = DataFrame.fromCSV("value\n10\n20\n30\n");
+    const result = df.sum("value");
     expect(result).toBe(60);
   });
 
-  it('handles empty column', () => {
-    const df = DataFrame.fromCSV('value\n');
-    const result = df.sum('value');
+  it("handles empty column", () => {
+    const df = DataFrame.fromCSV("value\n");
+    const result = df.sum("value");
     expect(result).toBe(0);
   });
 });
 ```
 
 #### 6. **Update Documentation**
+
 - Add examples to README.md
 - Document performance improvements
 - Update API reference
@@ -2111,24 +817,26 @@ describe('DataFrame.sum()', () => {
 
 For the SIMD aggregation feature, ensure these functions are exposed:
 
-| Zig Function | Wasm Export | JS Method | TypeScript Type |
-|--------------|-------------|-----------|-----------------|
-| `simd.sumInt64()` | `df_sum_int64()` | `df.sum(col)` | `sum(columnName: string): number` |
-| `simd.sumFloat64()` | `df_sum_float64()` | `df.sum(col)` | `sum(columnName: string): number` |
-| `simd.meanFloat64()` | `df_mean()` | `df.mean(col)` | `mean(columnName: string): number` |
-| `simd.minFloat64()` | `df_min()` | `df.min(col)` | `min(columnName: string): number` |
-| `simd.maxFloat64()` | `df_max()` | `df.max(col)` | `max(columnName: string): number` |
-| `simd.varianceFloat64()` | `df_variance()` | `df.variance(col)` | `variance(columnName: string): number` |
-| `simd.stdDevFloat64()` | `df_stddev()` | `df.stddev(col)` | `stddev(columnName: string): number` |
+| Zig Function             | Wasm Export        | JS Method          | TypeScript Type                        |
+| ------------------------ | ------------------ | ------------------ | -------------------------------------- |
+| `simd.sumInt64()`        | `df_sum_int64()`   | `df.sum(col)`      | `sum(columnName: string): number`      |
+| `simd.sumFloat64()`      | `df_sum_float64()` | `df.sum(col)`      | `sum(columnName: string): number`      |
+| `simd.meanFloat64()`     | `df_mean()`        | `df.mean(col)`     | `mean(columnName: string): number`     |
+| `simd.minFloat64()`      | `df_min()`         | `df.min(col)`      | `min(columnName: string): number`      |
+| `simd.maxFloat64()`      | `df_max()`         | `df.max(col)`      | `max(columnName: string): number`      |
+| `simd.varianceFloat64()` | `df_variance()`    | `df.variance(col)` | `variance(columnName: string): number` |
+| `simd.stdDevFloat64()`   | `df_stddev()`      | `df.stddev(col)`   | `stddev(columnName: string): number`   |
 
 ### Performance Considerations
 
 **SIMD Performance in Node.js/Browser**:
+
 - SIMD operations provide 30%+ speedup for aggregations
 - SIMD support: Chrome 91+, Firefox 89+, Safari 16.4+, Node.js 16+
 - Fallback to scalar for older environments (automatic)
 
 **Memory Management**:
+
 - Always free temporary Wasm memory allocations
 - Use try/finally blocks in JavaScript
 - Document memory ownership in JSDoc
@@ -2136,12 +844,14 @@ For the SIMD aggregation feature, ensure these functions are exposed:
 ### Common Pitfalls
 
 **❌ DON'T**:
+
 - Forget to export from wasm.zig
 - Skip TypeScript type definitions
 - Ignore memory cleanup in JavaScript
 - Assume SIMD is always available (check runtime)
 
 **✅ DO**:
+
 - Test both SIMD and scalar paths
 - Document performance characteristics
 - Add usage examples in JSDoc
@@ -2150,6 +860,7 @@ For the SIMD aggregation feature, ensure these functions are exposed:
 ### Testing Node.js API
 
 **Run Node.js tests**:
+
 ```bash
 # Build Wasm
 zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
@@ -2159,14 +870,15 @@ npm test
 ```
 
 **Manual testing**:
-```javascript
-const { DataFrame } = require('./js/rozes');
 
-const df = DataFrame.fromCSV('price,quantity\n10.5,2\n20.0,3\n15.75,1\n');
-console.log('Sum:', df.sum('price'));          // 46.25 (SIMD accelerated)
-console.log('Mean:', df.mean('quantity'));      // 2.0
-console.log('Min:', df.min('price'));           // 10.5
-console.log('Max:', df.max('price'));           // 20.0
+```javascript
+const { DataFrame } = require("./js/rozes");
+
+const df = DataFrame.fromCSV("price,quantity\n10.5,2\n20.0,3\n15.75,1\n");
+console.log("Sum:", df.sum("price")); // 46.25 (SIMD accelerated)
+console.log("Mean:", df.mean("quantity")); // 2.0
+console.log("Min:", df.min("price")); // 10.5
+console.log("Max:", df.max("price")); // 20.0
 ```
 
 ---
@@ -3378,5 +2090,5 @@ zig build test -Dtest-filter="Debug: 02_quoted_fields"
 
 ---
 
-**Last Updated**: 2025-10-27
-**Related**: See `../CLAUDE.md` for project-wide guidelines and `../docs/` for full documentation
+**Last Updated**: 2025-11-01
+**Related**: `../CLAUDE.md` (project), `../docs/` (detailed guides), `TO-FIX.md` (open issues)

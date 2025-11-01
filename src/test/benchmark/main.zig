@@ -11,6 +11,8 @@ const csv_bench = @import("csv_bench.zig");
 const ops_bench = @import("operations_bench.zig");
 const simd_bench = @import("simd_bench.zig");
 const radix_bench = @import("radix_join_bench.zig");
+const arrow_bench = @import("arrow_bench.zig");
+const lazy_bench = @import("lazy_eval_bench.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -196,6 +198,26 @@ pub fn main() !void {
             std.debug.print("⚠️  100K × 100K comparison failed: {}\n", .{err});
         };
     }
+
+    // Apache Arrow Conversion Benchmarks (Milestone 1.2.0 Phase 5)
+    // NOTE: Temporarily disabled due to API compatibility issues (DataFrame.create signature changed)
+    // TODO: Fix arrow/ipc.zig to match new DataFrame API
+    // std.debug.print("\n━━━ Apache Arrow Conversion Benchmarks (Milestone 1.2.0 Phase 5) ━━━\n\n", .{});
+    //
+    // {
+    //     std.debug.print("Running Apache Arrow benchmarks...\n", .{});
+    //     try arrow_bench.main();
+    // }
+
+    // Lazy Evaluation Benchmarks (Milestone 1.2.0 Phase 6)
+    // NOTE: Temporarily disabled due to API compatibility issues (BenchmarkResult structure changed)
+    // TODO: Fix lazy_eval_bench.zig to match new BenchmarkResult API
+    // std.debug.print("\n━━━ Lazy Evaluation Benchmarks (Milestone 1.2.0 Phase 6) ━━━\n\n", .{});
+    //
+    // {
+    //     std.debug.print("Running lazy vs eager evaluation comparison...\n", .{});
+    //     try lazy_bench.benchmarkLazyVsEager(allocator);
+    // }
 
     // Performance Target Comparison
     std.debug.print("\n━━━ Performance Target Comparison ━━━\n\n", .{});

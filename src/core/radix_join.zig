@@ -585,10 +585,13 @@ pub fn buildHashTable(
     var table = try HashTable.init(allocator, capacity);
     errdefer table.deinit();
 
-    // Insert all key-value pairs
-    for (partition_data) |kv| {
-        try table.insert(kv.key, kv.row_index);
+    // Insert all key-value pairs (bounded loop)
+    var kv_idx: u32 = 0;
+    const data_len: u32 = @intCast(partition_data.len);
+    while (kv_idx < data_len and kv_idx < MAX_PARTITION_SIZE) : (kv_idx += 1) {
+        try table.insert(partition_data[kv_idx].key, partition_data[kv_idx].row_index);
     }
+    assert(kv_idx == data_len); // Post-condition: All data inserted
 
     assert(table.count == partition_data.len);
     return table;

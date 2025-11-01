@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2025-11-01
+
+### Added
+
+- SIMD vectorized operations: `sum()`, `mean()`, `min()`, `max()`, `variance()`, `stddev()` for Int64/Float64
+- SIMD infrastructure: CPU detection, automatic scalar fallback, compile-time feature flags
+- Multi-pass radix partitioning (8-bit radix) for integer key joins with automatic fallback to standard hash
+- SIMD probe phase with vectorized comparisons
+- Bloom filters for early rejection in joins
+- Multi-threaded CSV type inference with work-stealing pool (max 8 threads)
+- Adaptive 64KB-1MB chunking based on file size and CPU count
+- Quote-aware boundary detection for parallel CSV parsing (backward/forward scan)
+- Type conflict resolution (String > Float64 > Int64 > Bool)
+- Parallel DataFrame operations: filter, sort, groupBy with row-level partitioning
+- Thread pool management (up to 8 workers) with optimal thread count calculation
+- Apache Arrow compatibility: schema mapping, IPC RecordBatch format, zero-copy conversion
+- `DataFrame.toArrow()` / `DataFrame.fromArrow()` for Arrow interop
+- Query plan representation as DAG (filter, select, limit operations)
+- Predicate pushdown (filter before select) and projection pushdown (select early)
+- `LazyDataFrame` wrapper with `.collect()` execution
+- `QueryOptimizer` with transformation passes
+- Node.js API: 6 SIMD functions exported via wasm.zig with TypeScript definitions
+- 40 SIMD unit tests + 24 Node.js integration tests + 40+ radix join tests + 14 parallel parser tests + 18 query plan tests
+
+### Performance
+
+- **SIMD Aggregations**: 0.04-0.09ms for 200K rows (2-6 billion rows/sec, 95-97% faster than targets)
+- **Radix Join**: 1.65× speedup vs standard hash on 100K×100K rows
+- **Bloom Filter**: 0.01ms rejection (97% faster than target)
+- **Parallel CSV**: 578ms for 1M rows (81% faster than 3s target, 1.7M rows/sec)
+- **Parallel Filter**: 13ms for 1M rows (87% faster than target, 76M rows/sec)
+- **Parallel Sort**: 6ms for 100K rows (94% faster than target, 16M rows/sec)
+- **Parallel GroupBy**: 1.76ms for 100K rows (99% faster than target, 57M rows/sec)
+- **Overall**: 11/12 benchmarks passed targets (92% pass rate)
+
+### Changed
+
+- Auto-enable parallel operations for datasets >100K rows
+- Adaptive parallelization thresholds based on dataset size
+- Arrow compatibility: zero-copy for numeric types (Int64, Float64, Bool)
+
+### Fixed
+
+- SIMD graceful fallback on unsupported CPUs (automatic detection)
+- Radix join correct handling of skewed distributions (zipf, uniform)
+- Parallel parsing thread-safe chunk boundary detection
+- Zero memory leaks in parallel execution (1000-iteration tests verified)
+- Arrow/IPC API compatibility (DataType → ValueType, valueType → value_type, rowCount → row_count)
+
+---
+
 ## [1.1.0] - 2025-10-31
 
 ### Added

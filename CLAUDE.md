@@ -786,3 +786,4 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 - whenever finishing a task, update @docs/TODO.md
 - all new docs should go into /docs
 - all benchmarks should be put into zig build benchmark
+- all benchmarks should be placed in zig build benchmark, dont create separate zig build benchmark-xxx commands

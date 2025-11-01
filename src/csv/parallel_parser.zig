@@ -331,11 +331,13 @@ pub const ParallelCSVParser = struct {
 
                 var col_count_calc: u32 = 1; // At least 1 column
                 var j: u32 = 0;
-                while (j < first_line.len and j < 10_000) : (j += 1) {
+                const max_scan: u32 = @min(@as(u32, @intCast(first_line.len)), 10_000);
+                while (j < max_scan) : (j += 1) {
                     if (first_line[j] == self.opts.delimiter) {
                         col_count_calc += 1;
                     }
                 }
+                std.debug.assert(j == max_scan); // Post-condition: Scanned entire line or hit limit
                 break :blk col_count_calc;
             } else results[0].col_types.len;
 
@@ -381,8 +383,9 @@ pub const ParallelCSVParser = struct {
                                 &ctx.results[idx],
                             ) catch {
                                 // Error in type inference - mark all columns as String
-                                for (ctx.results[idx].col_types) |*t| {
-                                    t.* = .String;
+                                var type_idx: u32 = 0;
+                                while (type_idx < ctx.results[idx].col_types.len and type_idx < 10_000) : (type_idx += 1) {
+                                    ctx.results[idx].col_types[type_idx] = .String;
                                 }
                             };
                         }
@@ -557,11 +560,12 @@ pub const ParallelCSVParser = struct {
         std.debug.assert(results.len == self.chunks.len); // Pre-condition #2
 
         var i: u32 = 0;
-        while (i < results.len) : (i += 1) {
+        const max_results: u32 = @min(@as(u32, @intCast(results.len)), MAX_THREADS * TARGET_CHUNKS_PER_THREAD);
+        while (i < max_results) : (i += 1) {
             results[i].deinit(self.allocator);
         }
 
-        std.debug.assert(i == results.len); // Post-condition
+        std.debug.assert(i == results.len or i == max_results); // Post-condition
 
         self.allocator.free(results);
     }

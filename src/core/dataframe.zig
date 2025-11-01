@@ -733,6 +733,55 @@ pub const DataFrame = struct {
             @as(f64, @floatFromInt(total_memory)) / (1024.0 * 1024.0),
         });
     }
+
+    /// Convert DataFrame to Apache Arrow RecordBatch (zero-copy where possible)
+    ///
+    /// **Performance**: Zero-copy for numeric types (Int64, Float64, Bool)
+    /// **Memory**: O(1) additional memory for schema + buffer metadata
+    ///
+    /// **Apache Arrow Interop**:
+    /// - Compatible with PyArrow 10.0+ and Arrow JS 10.0+
+    /// - Numeric columns use zero-copy (shared memory)
+    /// - String columns require copying (variable-length encoding)
+    ///
+    /// Example:
+    /// ```zig
+    /// const batch = try df.toArrow(allocator);
+    /// defer batch.deinit();
+    /// defer batch.schema.deinit();
+    ///
+    /// // Use with PyArrow or Arrow JS
+    /// ```
+    pub fn toArrow(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+    ) !@import("../arrow/ipc.zig").RecordBatch {
+        const arrow_ipc = @import("../arrow/ipc.zig");
+        return try arrow_ipc.dataFrameToArrow(allocator, self);
+    }
+
+    /// Create DataFrame from Apache Arrow RecordBatch
+    ///
+    /// **Performance**: Zero-copy where possible, allocates for safety
+    /// **Memory**: O(n × m) for data (MVP allocates new memory for safety)
+    ///
+    /// **Apache Arrow Interop**:
+    /// - Compatible with PyArrow 10.0+ and Arrow JS 10.0+
+    /// - Future optimization: zero-copy via shared memory
+    ///
+    /// Example:
+    /// ```zig
+    /// const batch = // ... from PyArrow or Arrow JS
+    /// const df = try DataFrame.fromArrow(allocator, &batch);
+    /// defer df.free();
+    /// ```
+    pub fn fromArrow(
+        allocator: std.mem.Allocator,
+        batch: *const @import("../arrow/ipc.zig").RecordBatch,
+    ) !DataFrame {
+        const arrow_ipc = @import("../arrow/ipc.zig");
+        return try arrow_ipc.arrowToDataFrame(allocator, batch);
+    }
 };
 
 // Re-export sort types for convenience

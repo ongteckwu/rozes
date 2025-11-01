@@ -101,10 +101,10 @@ pub const simd_available = blk: {
 /// ```
 pub fn findNextSpecialChar(
     buffer: []const u8,
-    start: usize,
+    start: u32,
     delimiter: u8,
     quote: u8,
-) usize {
+) u32 {
     std.debug.assert(start <= buffer.len); // Pre-condition #1
     std.debug.assert(delimiter != 0); // Pre-condition #2: Valid delimiter
     std.debug.assert(quote != 0); // Pre-condition #3: Valid quote
@@ -113,13 +113,16 @@ pub fn findNextSpecialChar(
         return findNextSpecialCharScalar(buffer, start, delimiter, quote);
     }
 
+    const buffer_len: u32 = @intCast(buffer.len);
+    std.debug.assert(start <= buffer_len); // Pre-condition #4: Valid start
+
     var pos = start;
 
     // Process 16-byte chunks with SIMD
     const MAX_ITERATIONS: u32 = 1_000_000_000 / SIMD_WIDTH; // 1GB / 16 bytes
     var iterations: u32 = 0;
 
-    while (pos + SIMD_WIDTH <= buffer.len and iterations < MAX_ITERATIONS) : (iterations += 1) {
+    while (pos + SIMD_WIDTH <= buffer_len and iterations < MAX_ITERATIONS) : (iterations += 1) {
         // Load 16 bytes
         const chunk: @Vector(SIMD_WIDTH, u8) = buffer[pos..][0..SIMD_WIDTH].*;
 
@@ -158,30 +161,33 @@ pub fn findNextSpecialChar(
 /// - SIMD found a match in chunk (need exact position)
 fn findNextSpecialCharScalar(
     buffer: []const u8,
-    start: usize,
+    start: u32,
     delimiter: u8,
     quote: u8,
-) usize {
+) u32 {
     std.debug.assert(start <= buffer.len); // Pre-condition #1
     std.debug.assert(delimiter != 0); // Pre-condition #2
+
+    const buffer_len: u32 = @intCast(buffer.len);
+    std.debug.assert(start <= buffer_len); // Pre-condition #3: Valid start
 
     const MAX_SCAN: u32 = 1_000_000; // Max 1MB field
     var pos = start;
     var iterations: u32 = 0;
 
-    while (pos < buffer.len and iterations < MAX_SCAN) : (iterations += 1) {
+    while (pos < buffer_len and iterations < MAX_SCAN) : (iterations += 1) {
         const char = buffer[pos];
         if (char == delimiter or char == quote) {
-            std.debug.assert(pos < buffer.len); // Post-condition #1
+            std.debug.assert(pos < buffer_len); // Post-condition #1
             return pos;
         }
         pos += 1;
     }
 
     std.debug.assert(iterations <= MAX_SCAN); // Post-condition #2
-    std.debug.assert(pos <= buffer.len); // Post-condition #3
+    std.debug.assert(pos <= buffer_len); // Post-condition #3
 
-    return buffer.len; // Not found
+    return buffer_len; // Not found
 }
 
 /// SIMD Float64 Comparisons for Sort Operations
@@ -803,48 +809,48 @@ pub fn stdDevFloat64(data: []const f64) ?f64 {
 test "findNextSpecialChar finds delimiter in short string" {
     const buffer = "hello,world";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 5), pos);
+    try std.testing.expectEqual(@as(u32, 5), pos);
 }
 
 test "findNextSpecialChar finds quote in short string" {
     const buffer = "hello\"world";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 5), pos);
+    try std.testing.expectEqual(@as(u32, 5), pos);
 }
 
 test "findNextSpecialChar skips non-special characters" {
     const buffer = "abcdefghijklmnop,";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 16), pos);
+    try std.testing.expectEqual(@as(u32, 16), pos);
 }
 
 test "findNextSpecialChar returns buffer.len when not found" {
     const buffer = "nospecialchars";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(buffer.len, pos);
+    try std.testing.expectEqual(@as(u32, @intCast(buffer.len)), pos);
 }
 
 test "findNextSpecialChar handles delimiter at exact 16-byte boundary" {
     // 16 bytes + delimiter
     const buffer = "0123456789abcdef,end";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 16), pos);
+    try std.testing.expectEqual(@as(u32, 16), pos);
 }
 
 test "findNextSpecialChar handles quote in SIMD chunk" {
     // Delimiter at byte 10 (within first 16-byte chunk)
     const buffer = "0123456789,abcdef";
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 10), pos);
+    try std.testing.expectEqual(@as(u32, 10), pos);
 }
 
 test "findNextSpecialChar handles start offset" {
     const buffer = "abc,def,ghi";
     const pos1 = findNextSpecialChar(buffer, 0, ',', '"');
-    try std.testing.expectEqual(@as(usize, 3), pos1);
+    try std.testing.expectEqual(@as(u32, 3), pos1);
 
     const pos2 = findNextSpecialChar(buffer, pos1 + 1, ',', '"');
-    try std.testing.expectEqual(@as(usize, 7), pos2);
+    try std.testing.expectEqual(@as(u32, 7), pos2);
 }
 
 test "findNextSpecialChar handles long field (>16 bytes)" {
@@ -852,7 +858,7 @@ test "findNextSpecialChar handles long field (>16 bytes)" {
     const pos = findNextSpecialChar(buffer, 0, ',', '"');
     // Buffer: "this_is_a_very_long_field_with_no_special_chars_until_here" = 58 chars
     // Delimiter "," is at index 58
-    try std.testing.expectEqual(@as(usize, 58), pos);
+    try std.testing.expectEqual(@as(u32, 58), pos);
 }
 
 test "compareFloat64Batch compares pairs correctly" {
