@@ -26,21 +26,21 @@ const CSVOptions = core_types.CSVOptions;
 const MAX_THREADS: u32 = 8;
 
 /// Chunk size limits (adaptive based on file size)
-const MIN_CHUNK_SIZE: usize = 64 * 1024;      // 64KB
-const MAX_CHUNK_SIZE: usize = 1024 * 1024;    // 1MB
-const TARGET_CHUNKS_PER_THREAD: u32 = 4;      // Each thread processes 4 chunks
+const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
+const MAX_CHUNK_SIZE: usize = 1024 * 1024; // 1MB
+const TARGET_CHUNKS_PER_THREAD: u32 = 4; // Each thread processes 4 chunks
 
 /// Maximum CSV file size for parallel parsing
 const MAX_CSV_SIZE: u32 = 1024 * 1024 * 1024; // 1GB
 
 /// Chunk descriptor for parallel processing
 const Chunk = struct {
-    start: usize,           // Start offset in buffer
-    end: usize,             // End offset in buffer
-    row_start: u32,         // First row index in this chunk
-    row_count: u32,         // Number of rows in chunk
-    col_count: u32,         // Number of columns detected
-    types: []ValueType,     // Inferred types for each column
+    start: usize, // Start offset in buffer
+    end: usize, // End offset in buffer
+    row_start: u32, // First row index in this chunk
+    row_count: u32, // Number of rows in chunk
+    col_count: u32, // Number of columns detected
+    types: []ValueType, // Inferred types for each column
 
     /// Pre-condition assertions
     pub fn validate(self: *const Chunk) void {
@@ -55,8 +55,8 @@ const Chunk = struct {
 const ChunkInferenceResult = struct {
     chunk_id: u32,
     col_types: []ValueType,
-    confidence: []f32,      // Confidence score for each type (0.0-1.0)
-    row_count: u32,         // Rows processed in this chunk
+    confidence: []f32, // Confidence score for each type (0.0-1.0)
+    row_count: u32, // Rows processed in this chunk
 
     pub fn init(allocator: std.mem.Allocator, col_count: u32) !ChunkInferenceResult {
         std.debug.assert(col_count > 0); // Pre-condition #1
@@ -511,6 +511,7 @@ pub const ParallelCSVParser = struct {
         chunk_results: []ChunkInferenceResult,
         col_idx: u32,
     ) !ValueType {
+        _ = self;
         std.debug.assert(chunk_results.len > 0); // Pre-condition #1
         std.debug.assert(col_idx < chunk_results[0].col_types.len); // Pre-condition #2
 
@@ -578,7 +579,7 @@ test "ParallelCSVParser.init determines correct thread count" {
 
     // Small CSV → single thread
     const small_csv = "name,age\nAlice,30\n";
-    var small_parser = try ParallelCSVParser.init(allocator, small_csv, .{});
+    const small_parser = try ParallelCSVParser.init(allocator, small_csv, .{});
     try testing.expectEqual(@as(u32, 1), small_parser.thread_count);
 
     // Large CSV → multiple threads
@@ -586,7 +587,7 @@ test "ParallelCSVParser.init determines correct thread count" {
     defer allocator.free(large_csv);
     @memset(large_csv, 'x');
 
-    var large_parser = try ParallelCSVParser.init(allocator, large_csv, .{});
+    const large_parser = try ParallelCSVParser.init(allocator, large_csv, .{});
     try testing.expect(large_parser.thread_count > 1);
     try testing.expect(large_parser.thread_count <= MAX_THREADS);
 }
@@ -596,7 +597,7 @@ test "findChunkBoundary finds newline outside quotes" {
     const allocator = testing.allocator;
 
     const csv = "name,bio\nAlice,\"Line 1\nLine 2\"\nBob,Simple\n";
-    var parser = try ParallelCSVParser.init(allocator, csv, .{});
+    const parser = try ParallelCSVParser.init(allocator, csv, .{});
 
     // Find boundary after first row (should skip embedded newline in quotes)
     const boundary = try parser.findChunkBoundary(0, 30);
@@ -615,7 +616,7 @@ test "mergeColumnType resolves type conflicts correctly" {
     const allocator = testing.allocator;
 
     const csv = "dummy\n";
-    var parser = try ParallelCSVParser.init(allocator, csv, .{});
+    const parser = try ParallelCSVParser.init(allocator, csv, .{});
 
     // Create mock chunk results
     var result1 = try ChunkInferenceResult.init(allocator, 1);

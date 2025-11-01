@@ -549,6 +549,374 @@ export class DataFrame {
    * ```
    */
   free(): void;
+
+  /**
+   * Drop columns from DataFrame
+   *
+   * @param columnNames - Array of column names to drop
+   * @returns New DataFrame without the specified columns
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("name,age,score\nAlice,30,95.5\n");
+   * const reduced = df.drop(['score']); // Keep only 'name' and 'age'
+   * reduced.free();
+   * ```
+   */
+  drop(columnNames: string[]): DataFrame;
+
+  /**
+   * Rename a column in the DataFrame
+   *
+   * @param oldName - Current column name
+   * @param newName - New column name
+   * @returns New DataFrame with renamed column
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("age,score\n30,95.5\n25,87.3\n");
+   * const renamed = df.rename('age', 'years');
+   * console.log(renamed.columns); // ['years', 'score']
+   * renamed.free();
+   * ```
+   */
+  rename(oldName: string, newName: string): DataFrame;
+
+  /**
+   * Get unique values from a column
+   *
+   * @param columnName - Column name
+   * @returns Array of unique values (all as strings)
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("category\nA\nB\nA\nC\nB\n");
+   * const unique = df.unique('category');
+   * console.log(unique); // ['A', 'B', 'C']
+   * ```
+   */
+  unique(columnName: string): string[];
+
+  /**
+   * Remove duplicate rows based on subset of columns
+   *
+   * @param subset - Column names to check for duplicates (null = all columns)
+   * @returns New DataFrame with duplicates removed
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("name,age\nAlice,30\nBob,25\nAlice,30\n");
+   * const unique = df.dropDuplicates();
+   * console.log(unique.shape); // { rows: 2, cols: 2 } - removed 1 duplicate
+   * unique.free();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Only check 'name' column for duplicates
+   * const uniqueNames = df.dropDuplicates(['name']);
+   * uniqueNames.free();
+   * ```
+   */
+  dropDuplicates(subset?: string[] | null): DataFrame;
+
+  /**
+   * Summary statistics for all numeric columns
+   */
+  interface SummaryStats {
+    /** Number of non-null values */
+    count?: number;
+    /** Mean/average value */
+    mean?: number;
+    /** Standard deviation */
+    std?: number;
+    /** Minimum value */
+    min?: number;
+    /** Maximum value */
+    max?: number;
+  }
+
+  /**
+   * Get summary statistics for all numeric columns
+   *
+   * @returns Object mapping column names to summary stats
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("age,score\n30,95.5\n25,87.3\n35,91.0\n");
+   * const stats = df.describe();
+   * console.log(stats);
+   * // Output:
+   * // {
+   * //   age: { count: 3, mean: 30, std: 5, min: 25, max: 35 },
+   * //   score: { count: 3, mean: 91.27, std: 4.11, min: 87.3, max: 95.5 }
+   * // }
+   * ```
+   */
+  describe(): Record<string, SummaryStats>;
+
+  /**
+   * Random sample of n rows (with replacement)
+   *
+   * @param n - Number of rows to sample
+   * @returns New DataFrame with sampled rows
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("name,age\nAlice,30\nBob,25\nCharlie,35\n");
+   * const sample = df.sample(5); // Sample 5 rows with replacement
+   * console.log(sample.shape); // { rows: 5, cols: 2 }
+   * sample.free();
+   * ```
+   */
+  sample(n: number): DataFrame;
+
+  /**
+   * Drop rows with any missing (null/NaN) values
+   *
+   * @returns New DataFrame with missing values removed
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("age,score\n30,95.5\n25,NaN\n35,91.0\n");
+   * const clean = df.dropna();
+   * console.log(clean.shape); // { rows: 2, cols: 2 } - row with NaN removed
+   * ```
+   */
+  dropna(): DataFrame;
+
+  /**
+   * Check for missing values in a column
+   *
+   * Returns a boolean array where 1 indicates a missing value (null/NaN)
+   *
+   * @param columnName - Name of the column to check
+   * @returns Boolean array (1 = missing, 0 = present)
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("age,score\n30,95.5\n25,NaN\n35,91.0\n");
+   * const mask = df.isna('score');
+   * console.log(mask); // Uint8Array [0, 1, 0] - second value is missing
+   * ```
+   */
+  isna(columnName: string): Uint8Array;
+
+  /**
+   * Check for non-missing values in a column
+   *
+   * Returns a boolean array where 1 indicates a present (non-null/non-NaN) value
+   *
+   * @param columnName - Name of the column to check
+   * @returns Boolean array (1 = present, 0 = missing)
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("age,score\n30,95.5\n25,NaN\n35,91.0\n");
+   * const mask = df.notna('score');
+   * console.log(mask); // Uint8Array [1, 0, 1] - second value is missing
+   * ```
+   */
+  notna(columnName: string): Uint8Array;
+
+  /**
+   * Export DataFrame to CSV string
+   *
+   * @param options - CSV formatting options
+   * @returns CSV string
+   *
+   * @example
+   * ```typescript
+   * const csv = df.toCSV();
+   * console.log(csv);
+   * // Output:
+   * // name,age,score
+   * // Alice,30,95.5
+   * // Bob,25,87.3
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Custom delimiter (tab-separated)
+   * const tsv = df.toCSV({ delimiter: '\t' });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Without headers
+   * const dataOnly = df.toCSV({ has_headers: false });
+   * ```
+   */
+  toCSV(options?: CSVOptions): string;
+
+  /**
+   * Access string operations on DataFrame columns
+   *
+   * @returns StringAccessor - Namespace for string operations
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nHELLO\nWorld\nMiXeD\n");
+   * const lower = df.str.lower('text');
+   * console.log(lower.at(0, 'text')); // 'hello'
+   * ```
+   */
+  readonly str: StringAccessor;
+}
+
+/**
+ * StringAccessor - String operations on DataFrame columns
+ *
+ * Provides pandas-like string operations for text data manipulation.
+ */
+export interface StringAccessor {
+  /**
+   * Convert strings to lowercase
+   *
+   * @param columnName - Name of the column to convert
+   * @returns New DataFrame with lowercase strings
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nHELLO\nWorld\n");
+   * const lower = df.str.lower('text');
+   * console.log(lower.at(0, 'text')); // 'hello'
+   * console.log(lower.at(1, 'text')); // 'world'
+   * ```
+   */
+  lower(columnName: string): DataFrame;
+
+  /**
+   * Convert strings to uppercase
+   *
+   * @param columnName - Name of the column to convert
+   * @returns New DataFrame with uppercase strings
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello\nworld\n");
+   * const upper = df.str.upper('text');
+   * console.log(upper.at(0, 'text')); // 'HELLO'
+   * ```
+   */
+  upper(columnName: string): DataFrame;
+
+  /**
+   * Trim whitespace from strings
+   *
+   * @param columnName - Name of the column to trim
+   * @returns New DataFrame with trimmed strings
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\n  hello  \n  world  \n");
+   * const trimmed = df.str.trim('text');
+   * console.log(trimmed.at(0, 'text')); // 'hello'
+   * ```
+   */
+  trim(columnName: string): DataFrame;
+
+  /**
+   * Check if strings contain a substring
+   *
+   * @param columnName - Name of the column to check
+   * @param pattern - Substring to search for
+   * @returns New DataFrame with boolean column
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello world\ngoodbye world\nfoo bar\n");
+   * const contains = df.str.contains('text', 'world');
+   * console.log(contains.at(0, 'text')); // true
+   * console.log(contains.at(2, 'text')); // false
+   * ```
+   */
+  contains(columnName: string, pattern: string): DataFrame;
+
+  /**
+   * Replace substring in strings
+   *
+   * @param columnName - Name of the column to modify
+   * @param from - Substring to replace
+   * @param to - Replacement substring
+   * @returns New DataFrame with replaced strings
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello world\nhello there\n");
+   * const replaced = df.str.replace('text', 'hello', 'hi');
+   * console.log(replaced.at(0, 'text')); // 'hi world'
+   * ```
+   */
+  replace(columnName: string, from: string, to: string): DataFrame;
+
+  /**
+   * Extract substring from strings
+   *
+   * @param columnName - Name of the column to slice
+   * @param start - Start index (inclusive)
+   * @param end - End index (exclusive)
+   * @returns New DataFrame with sliced strings
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello\nworld\n");
+   * const sliced = df.str.slice('text', 0, 3);
+   * console.log(sliced.at(0, 'text')); // 'hel'
+   * console.log(sliced.at(1, 'text')); // 'wor'
+   * ```
+   */
+  slice(columnName: string, start: number, end: number): DataFrame;
+
+  /**
+   * Get length of strings
+   *
+   * @param columnName - Name of the column
+   * @returns New DataFrame with integer column containing string lengths
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\na\nab\nabc\n");
+   * const lengths = df.str.len('text');
+   * console.log(lengths.at(0, 'text')); // 1
+   * console.log(lengths.at(2, 'text')); // 3
+   * ```
+   */
+  len(columnName: string): DataFrame;
+
+  /**
+   * Check if strings start with a prefix
+   *
+   * @param columnName - Name of the column to check
+   * @param prefix - Prefix to check for
+   * @returns New DataFrame with boolean column
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello world\nhello there\ngoodbye\n");
+   * const starts = df.str.startsWith('text', 'hello');
+   * console.log(starts.at(0, 'text')); // true
+   * console.log(starts.at(2, 'text')); // false
+   * ```
+   */
+  startsWith(columnName: string, prefix: string): DataFrame;
+
+  /**
+   * Check if strings end with a suffix
+   *
+   * @param columnName - Name of the column to check
+   * @param suffix - Suffix to check for
+   * @returns New DataFrame with boolean column
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("text\nhello world\ngoodbye world\nfoo bar\n");
+   * const ends = df.str.endsWith('text', 'world');
+   * console.log(ends.at(0, 'text')); // true
+   * console.log(ends.at(2, 'text')); // false
+   * ```
+   */
+  endsWith(columnName: string, suffix: string): DataFrame;
 }
 
 /**

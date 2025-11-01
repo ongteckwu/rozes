@@ -3,7 +3,6 @@
 //! This module implements SQL-style join operations for DataFrames.
 //! It allows data enrichment by combining rows from two tables.
 //!
-//! See docs/TODO.md Phase 4 for Join specification.
 //!
 //! Example:
 //! ```zig
@@ -621,8 +620,8 @@ fn probeRadixPartitions(
         if (right_part.isEmpty()) continue; // No right rows to match
 
         // Extract partition data
-        const left_data = left_ctx.partitioned_data[left_part.start..left_part.start + left_part.count];
-        const right_data = right_ctx.partitioned_data[right_part.start..right_part.start + right_part.count];
+        const left_data = left_ctx.partitioned_data[left_part.start .. left_part.start + left_part.count];
+        const right_data = right_ctx.partitioned_data[right_part.start .. right_part.start + right_part.count];
 
         // Build hash table for right partition
         var hash_table = try radix_join.buildHashTable(allocator, right_data);
@@ -644,7 +643,7 @@ fn addUnmatchedLeftRows(
 ) !void {
     std.debug.assert(!left_part.isEmpty()); // Pre-condition
 
-    const left_data = left_ctx.partitioned_data[left_part.start..left_part.start + left_part.count];
+    const left_data = left_ctx.partitioned_data[left_part.start .. left_part.start + left_part.count];
 
     var i: u32 = 0;
     while (i < left_data.len) : (i += 1) {

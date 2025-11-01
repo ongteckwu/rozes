@@ -48,6 +48,7 @@ const ErrorCode = {
     IndexOutOfBounds: -6,
     TooManyDataFrames: -7,
     InvalidOptions: -8,
+    InvalidRange: -10,
 };
 
 /**
@@ -62,6 +63,7 @@ const ErrorMessages = {
     [ErrorCode.IndexOutOfBounds]: 'Index out of bounds',
     [ErrorCode.TooManyDataFrames]: 'Too many DataFrames (max 1000)',
     [ErrorCode.InvalidOptions]: 'Invalid CSV options',
+    [ErrorCode.InvalidRange]: 'Invalid range - start is greater than end',
 };
 
 /**
@@ -353,7 +355,7 @@ class DataFrame {
 
             // Validate length and bounds
             if (len === 0) {
-                return new Uint8Array(0);
+                return [];
             }
 
             const byteLength = len; // 1 byte per bool
@@ -361,8 +363,9 @@ class DataFrame {
                 throw new Error(`Pointer out of bounds: ${ptr} + ${byteLength} > ${wasm.memory.buffer.byteLength}`);
             }
 
-            // Return as Uint8Array (0 = false, 1 = true)
-            return new Uint8Array(wasm.memory.buffer, ptr, len);
+            // Convert Uint8Array (0 = false, 1 = true) to JavaScript boolean array
+            const uint8Array = new Uint8Array(wasm.memory.buffer, ptr, len);
+            return Array.from(uint8Array, byte => byte !== 0);
         }
 
         if (boolResult !== ErrorCode.TypeMismatch) {
@@ -1203,10 +1206,531 @@ class DataFrame {
     }
 
     /**
+     * Access string operations namespace
+     *
+     * @returns {StringAccessor} - String operations accessor
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nHELLO\nWorld\n');
+     * const lower = df.str.lower('text');
+     * console.log(lower.column('text')); // ['hello', 'world']
+     */
+    get str() {
+        this._checkNotFreed();
+        return new StringAccessor(this);
+    }
+
+    /**
      * @private
      * Set by Rozes.init()
      */
     static _wasm = null;
+}
+
+/**
+ * StringAccessor - Provides string manipulation operations on DataFrame columns
+ *
+ * Accessed via `df.str.methodName()` (similar to pandas)
+ */
+class StringAccessor {
+    constructor(dataframe) {
+        this._df = dataframe;
+        this._wasm = dataframe._wasm;
+    }
+
+    /**
+     * Convert string column to lowercase
+     *
+     * @param {string} columnName - Name of string column
+     * @returns {DataFrame} - New DataFrame with lowercase strings
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nHELLO\nWorld\n');
+     * const result = df.str.lower('text');
+     * console.log(result.column('text')); // ['hello', 'world']
+     */
+    lower(columnName) {
+        this._df._checkNotFreed();
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            const newHandle = this._wasm.instance.exports.rozes_str_lower(
+                this._df._handle,
+                colPtr,
+                colBytes.length
+            );
+
+            checkResult(newHandle, `Failed to str.lower('${columnName}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+        }
+    }
+
+    /**
+     * Convert string column to uppercase
+     *
+     * @param {string} columnName - Name of string column
+     * @returns {DataFrame} - New DataFrame with uppercase strings
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n');
+     * const result = df.str.upper('text');
+     * console.log(result.column('text')); // ['HELLO', 'WORLD']
+     */
+    upper(columnName) {
+        this._df._checkNotFreed();
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            const newHandle = this._wasm.instance.exports.rozes_str_upper(
+                this._df._handle,
+                colPtr,
+                colBytes.length
+            );
+
+            checkResult(newHandle, `Failed to str.upper('${columnName}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+        }
+    }
+
+    /**
+     * Trim whitespace from string column
+     *
+     * @param {string} columnName - Name of string column
+     * @returns {DataFrame} - New DataFrame with trimmed strings
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\n  hello  \n  world  \n');
+     * const result = df.str.trim('text');
+     * console.log(result.column('text')); // ['hello', 'world']
+     */
+    trim(columnName) {
+        this._df._checkNotFreed();
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            const newHandle = this._wasm.instance.exports.rozes_str_trim(
+                this._df._handle,
+                colPtr,
+                colBytes.length
+            );
+
+            checkResult(newHandle, `Failed to str.trim('${columnName}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+        }
+    }
+
+    /**
+     * Check if strings contain a substring
+     *
+     * @param {string} columnName - Name of string column
+     * @param {string} pattern - Substring to search for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\ngoodbye\n');
+     * const result = df.str.contains('text', 'world');
+     * console.log(result.column('text')); // [true, false]
+     */
+    contains(columnName, pattern) {
+        this._df._checkNotFreed();
+
+        // Tiger Style: Input validation
+        if (!columnName || typeof columnName !== 'string' || columnName.length === 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'contains() requires a non-empty column name (string)');
+        }
+        if (pattern === null || pattern === undefined) {
+            throw new RozesError(ErrorCode.InvalidInput, 'contains() requires a pattern argument (use empty string for empty pattern)');
+        }
+        if (typeof pattern !== 'string') {
+            throw new RozesError(ErrorCode.InvalidInput, 'contains() pattern must be a string');
+        }
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const patternBytes = new TextEncoder().encode(pattern);
+
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        // Handle empty pattern - allocate dummy byte to satisfy rozes_alloc(size > 0) assertion
+        const patternPtr = this._wasm.instance.exports.rozes_alloc(patternBytes.length || 1);
+        if (patternPtr === 0) {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate pattern buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            // Only copy pattern bytes if pattern is not empty
+            if (patternBytes.length > 0) {
+                const patternArray = new Uint8Array(this._wasm.memory.buffer, patternPtr, patternBytes.length);
+                patternArray.set(patternBytes);
+            }
+
+            const newHandle = this._wasm.instance.exports.rozes_str_contains(
+                this._df._handle,
+                colPtr,
+                colBytes.length,
+                patternPtr,
+                patternBytes.length  // Pass 0 for empty pattern
+            );
+
+            checkResult(newHandle, `Failed to str.contains('${columnName}', '${pattern}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            this._wasm.instance.exports.rozes_free_buffer(patternPtr, patternBytes.length || 1);
+        }
+    }
+
+    /**
+     * Replace substring in string column
+     *
+     * @param {string} columnName - Name of string column
+     * @param {string} pattern - Substring to replace
+     * @param {string} replacement - Replacement string
+     * @returns {DataFrame} - New DataFrame with replaced strings
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\nhello there\n');
+     * const result = df.str.replace('text', 'hello', 'hi');
+     * console.log(result.column('text')); // ['hi world', 'hi there']
+     */
+    replace(columnName, pattern, replacement) {
+        this._df._checkNotFreed();
+
+        // Tiger Style: Input validation
+        if (!columnName || typeof columnName !== 'string' || columnName.length === 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'replace() requires a non-empty column name (string)');
+        }
+        if (pattern === null || pattern === undefined) {
+            throw new RozesError(ErrorCode.InvalidInput, 'replace() requires a pattern argument (use empty string for empty pattern)');
+        }
+        if (typeof pattern !== 'string') {
+            throw new RozesError(ErrorCode.InvalidInput, 'replace() pattern must be a string');
+        }
+        if (replacement === null || replacement === undefined) {
+            throw new RozesError(ErrorCode.InvalidInput, 'replace() requires a replacement argument (use empty string for empty replacement)');
+        }
+        if (typeof replacement !== 'string') {
+            throw new RozesError(ErrorCode.InvalidInput, 'replace() replacement must be a string');
+        }
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const patternBytes = new TextEncoder().encode(pattern);
+        const replBytes = new TextEncoder().encode(replacement);
+
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        // Handle empty pattern/replacement - allocate dummy byte to satisfy rozes_alloc(size > 0)
+        const patternPtr = this._wasm.instance.exports.rozes_alloc(patternBytes.length || 1);
+        if (patternPtr === 0) {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate pattern buffer');
+        }
+
+        const replPtr = this._wasm.instance.exports.rozes_alloc(replBytes.length || 1);
+        if (replPtr === 0) {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            this._wasm.instance.exports.rozes_free_buffer(patternPtr, patternBytes.length || 1);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate replacement buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            // Only copy pattern/replacement bytes if not empty
+            if (patternBytes.length > 0) {
+                const patternArray = new Uint8Array(this._wasm.memory.buffer, patternPtr, patternBytes.length);
+                patternArray.set(patternBytes);
+            }
+
+            if (replBytes.length > 0) {
+                const replArray = new Uint8Array(this._wasm.memory.buffer, replPtr, replBytes.length);
+                replArray.set(replBytes);
+            }
+
+            const newHandle = this._wasm.instance.exports.rozes_str_replace(
+                this._df._handle,
+                colPtr,
+                colBytes.length,
+                patternPtr,
+                patternBytes.length,  // Pass actual length (may be 0)
+                replPtr,
+                replBytes.length  // Pass actual length (may be 0)
+            );
+
+            checkResult(newHandle, `Failed to str.replace('${columnName}', '${pattern}', '${replacement}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            this._wasm.instance.exports.rozes_free_buffer(patternPtr, patternBytes.length || 1);
+            this._wasm.instance.exports.rozes_free_buffer(replPtr, replBytes.length || 1);
+        }
+    }
+
+    /**
+     * Extract substring from string column
+     *
+     * @param {string} columnName - Name of string column
+     * @param {number} start - Start index (inclusive)
+     * @param {number} end - End index (exclusive)
+     * @returns {DataFrame} - New DataFrame with extracted substrings
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n');
+     * const result = df.str.slice('text', 0, 3);
+     * console.log(result.column('text')); // ['hel', 'wor']
+     */
+    slice(columnName, start, end) {
+        this._df._checkNotFreed();
+
+        // Tiger Style: Input validation
+        if (!columnName || typeof columnName !== 'string' || columnName.length === 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'slice() requires a non-empty column name (string)');
+        }
+        if (typeof start !== 'number' || !Number.isInteger(start) || start < 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'slice() start must be a non-negative integer');
+        }
+        if (typeof end !== 'number' || !Number.isInteger(end) || end < 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'slice() end must be a non-negative integer');
+        }
+        if (start > end) {
+            throw new RozesError(ErrorCode.InvalidInput, 'slice() start must be <= end');
+        }
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            const newHandle = this._wasm.instance.exports.rozes_str_slice(
+                this._df._handle,
+                colPtr,
+                colBytes.length,
+                start,
+                end
+            );
+
+            checkResult(newHandle, `Failed to str.slice('${columnName}', ${start}, ${end})`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+        }
+    }
+
+    /**
+     * Check if strings start with a prefix
+     *
+     * @param {string} columnName - Name of string column
+     * @param {string} prefix - Prefix to check for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\nhello there\ngoodbye\n');
+     * const result = df.str.startsWith('text', 'hello');
+     * console.log(result.column('text')); // [true, true, false]
+     */
+    startsWith(columnName, prefix) {
+        this._df._checkNotFreed();
+
+        // Tiger Style: Input validation
+        if (!columnName || typeof columnName !== 'string' || columnName.length === 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'startsWith() requires a non-empty column name (string)');
+        }
+        if (prefix === null || prefix === undefined) {
+            throw new RozesError(ErrorCode.InvalidInput, 'startsWith() requires a prefix argument (use empty string for empty prefix)');
+        }
+        if (typeof prefix !== 'string') {
+            throw new RozesError(ErrorCode.InvalidInput, 'startsWith() prefix must be a string');
+        }
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const prefixBytes = new TextEncoder().encode(prefix);
+
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        // Handle empty prefix - allocate dummy byte to satisfy rozes_alloc(size > 0)
+        const prefixPtr = this._wasm.instance.exports.rozes_alloc(prefixBytes.length || 1);
+        if (prefixPtr === 0) {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate prefix buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            // Only copy prefix bytes if not empty
+            if (prefixBytes.length > 0) {
+                const prefixArray = new Uint8Array(this._wasm.memory.buffer, prefixPtr, prefixBytes.length);
+                prefixArray.set(prefixBytes);
+            }
+
+            const newHandle = this._wasm.instance.exports.rozes_str_startsWith(
+                this._df._handle,
+                colPtr,
+                colBytes.length,
+                prefixPtr,
+                prefixBytes.length  // Pass actual length (may be 0)
+            );
+
+            checkResult(newHandle, `Failed to str.startsWith('${columnName}', '${prefix}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            this._wasm.instance.exports.rozes_free_buffer(prefixPtr, prefixBytes.length || 1);
+        }
+    }
+
+    /**
+     * Check if strings end with a suffix
+     *
+     * @param {string} columnName - Name of string column
+     * @param {string} suffix - Suffix to check for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\ngoodbye world\nfoo bar\n');
+     * const result = df.str.endsWith('text', 'world');
+     * console.log(result.column('text')); // [true, true, false]
+     */
+    endsWith(columnName, suffix) {
+        this._df._checkNotFreed();
+
+        // Tiger Style: Input validation
+        if (!columnName || typeof columnName !== 'string' || columnName.length === 0) {
+            throw new RozesError(ErrorCode.InvalidInput, 'endsWith() requires a non-empty column name (string)');
+        }
+        if (suffix === null || suffix === undefined) {
+            throw new RozesError(ErrorCode.InvalidInput, 'endsWith() requires a suffix argument (use empty string for empty suffix)');
+        }
+        if (typeof suffix !== 'string') {
+            throw new RozesError(ErrorCode.InvalidInput, 'endsWith() suffix must be a string');
+        }
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const suffixBytes = new TextEncoder().encode(suffix);
+
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        // Handle empty suffix - allocate dummy byte to satisfy rozes_alloc(size > 0)
+        const suffixPtr = this._wasm.instance.exports.rozes_alloc(suffixBytes.length || 1);
+        if (suffixPtr === 0) {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate suffix buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            // Only copy suffix bytes if not empty
+            if (suffixBytes.length > 0) {
+                const suffixArray = new Uint8Array(this._wasm.memory.buffer, suffixPtr, suffixBytes.length);
+                suffixArray.set(suffixBytes);
+            }
+
+            const newHandle = this._wasm.instance.exports.rozes_str_endsWith(
+                this._df._handle,
+                colPtr,
+                colBytes.length,
+                suffixPtr,
+                suffixBytes.length  // Pass actual length (may be 0)
+            );
+
+            checkResult(newHandle, `Failed to str.endsWith('${columnName}', '${suffix}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+            this._wasm.instance.exports.rozes_free_buffer(suffixPtr, suffixBytes.length || 1);
+        }
+    }
+
+    /**
+     * Get string lengths
+     *
+     * @param {string} columnName - Name of string column
+     * @returns {DataFrame} - New DataFrame with Int64 column (lengths as BigInts)
+     *
+     * @example
+     * const df = DataFrame.fromCSV('text\na\nab\nabc\n');
+     * const result = df.str.len('text');
+     * console.log(result.column('text')); // [1n, 2n, 3n]
+     */
+    len(columnName) {
+        this._df._checkNotFreed();
+
+        const colBytes = new TextEncoder().encode(columnName);
+        const colPtr = this._wasm.instance.exports.rozes_alloc(colBytes.length);
+        if (colPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column name buffer');
+        }
+
+        try {
+            const colArray = new Uint8Array(this._wasm.memory.buffer, colPtr, colBytes.length);
+            colArray.set(colBytes);
+
+            const newHandle = this._wasm.instance.exports.rozes_str_len(
+                this._df._handle,
+                colPtr,
+                colBytes.length
+            );
+
+            checkResult(newHandle, `Failed to str.len('${columnName}')`);
+            return new DataFrame(newHandle, this._wasm, this._df._autoCleanup);
+        } finally {
+            this._wasm.instance.exports.rozes_free_buffer(colPtr, colBytes.length);
+        }
+    }
 }
 
 /**
@@ -1223,9 +1747,16 @@ class Rozes {
      * const rozes = await Rozes.init('./zig-out/bin/rozes.wasm');
      */
     static async init(wasmPath = './rozes.wasm') {
-        // Load Wasm module
-        const response = await fetch(wasmPath);
-        const buffer = await response.arrayBuffer();
+        // Load Wasm module - handle both paths and ArrayBuffer/Uint8Array
+        let buffer;
+        if (wasmPath instanceof ArrayBuffer || wasmPath instanceof Uint8Array) {
+            // Direct buffer passed (Node.js with fs.readFileSync)
+            buffer = wasmPath instanceof Uint8Array ? wasmPath.buffer : wasmPath;
+        } else {
+            // Path or URL - fetch it
+            const response = await fetch(wasmPath);
+            buffer = await response.arrayBuffer();
+        }
 
         // Instantiate with WASI imports (complete snapshot_preview1)
         const wasi = {

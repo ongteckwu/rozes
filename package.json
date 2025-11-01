@@ -24,7 +24,7 @@
     "build": "zig build",
     "build:wasm": "zig build -Doptimize=ReleaseSmall",
     "test": "zig build test",
-    "test:node": "node src/test/nodejs/basic_api.test.js",
+    "test:node": "for file in src/test/nodejs/*.test.js; do echo \"Running $file...\"; node \"$file\" || exit 1; done",
     "benchmark": "zig build benchmark",
     "benchmark:js": "node src/test/benchmark/compare_js.js"
   },

@@ -113,7 +113,6 @@ fn fillConstant(
                 .value_type = .Int64,
                 .data = .{ .Int64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         .Float64 => blk: {
@@ -133,7 +132,6 @@ fn fillConstant(
                 .value_type = .Float64,
                 .data = .{ .Float64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         else => error.TypeMismatch,
@@ -171,7 +169,6 @@ fn fillForward(
                 .value_type = .Int64,
                 .data = .{ .Int64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         .Float64 => blk: {
@@ -197,7 +194,6 @@ fn fillForward(
                 .value_type = .Float64,
                 .data = .{ .Float64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         else => error.TypeMismatch,
@@ -237,7 +233,6 @@ fn fillBackward(
                 .value_type = .Int64,
                 .data = .{ .Int64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         .Float64 => blk: {
@@ -265,7 +260,6 @@ fn fillBackward(
                 .value_type = .Float64,
                 .data = .{ .Float64 = dst },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         else => error.TypeMismatch,
@@ -306,7 +300,11 @@ fn fillInterpolate(
                 if (std.math.isNan(prev_val) or std.math.isNan(next_val)) {
                     dst[idx] = std.math.nan(f64);
                 } else {
-                    const t = @as(f64, @floatFromInt(idx - prev_idx.?)) / @as(f64, @floatFromInt(next_idx.? - prev_idx.?));
+                    // Tiger Style: Invariant check for division by zero
+                    const range_diff = next_idx.? - prev_idx.?;
+                    std.debug.assert(range_diff > 0); // Invariant: next > prev
+
+                    const t = @as(f64, @floatFromInt(idx - prev_idx.?)) / @as(f64, @floatFromInt(range_diff));
                     dst[idx] = prev_val + t * (next_val - prev_val);
                 }
             } else if (prev_idx != null) {
@@ -328,29 +326,53 @@ fn fillInterpolate(
         .value_type = .Float64,
         .data = .{ .Float64 = dst },
         .length = series.length,
-        .allocator_owned = true,
     };
 }
 
 /// Helper to find previous valid value
 fn findPrevValid(data: []const f64, start_idx: u32) ?u32 {
+    // Tiger Style: 2+ assertions for helper functions
+    std.debug.assert(data.len > 0); // Assertion 1: Valid data
+    std.debug.assert(start_idx <= data.len); // Assertion 2: Bounds check
+
     if (start_idx == 0) return null;
 
     var idx = start_idx - 1;
-    while (true) {
-        if (!std.math.isNan(data[idx])) return idx;
+    const MAX_SCAN: u32 = start_idx; // Max iterations = start_idx
+    var i: u32 = 0;
+
+    while (i < MAX_SCAN) : (i += 1) {
+        if (!std.math.isNan(data[idx])) {
+            std.debug.assert(idx < data.len); // Assertion 3: Found valid index
+            return idx;
+        }
         if (idx == 0) return null;
         idx -= 1;
     }
+
+    std.debug.assert(i == MAX_SCAN); // Post-condition: Scanned all positions
+    return null; // No valid value found
 }
 
 /// Helper to find next valid value
 fn findNextValid(data: []const f64, start_idx: u32) ?u32 {
+    // Tiger Style: 2+ assertions for helper functions
+    std.debug.assert(data.len > 0); // Assertion 1: Valid data
+    std.debug.assert(start_idx < data.len); // Assertion 2: Bounds check
+
     var idx = start_idx + 1;
-    while (idx < data.len) : (idx += 1) {
-        if (!std.math.isNan(data[idx])) return idx;
+    const MAX_SCAN: u32 = @intCast(data.len - start_idx - 1); // Max iterations
+
+    var i: u32 = 0;
+    while (i < MAX_SCAN and idx < data.len) : ({ i += 1; idx += 1; }) {
+        if (!std.math.isNan(data[idx])) {
+            std.debug.assert(idx < data.len); // Assertion 3: Found valid index
+            return idx;
+        }
     }
-    return null;
+
+    std.debug.assert(i <= MAX_SCAN); // Post-condition: Scanned all positions
+    return null; // No valid value found
 }
 
 /// Drop rows with missing values from DataFrame
@@ -437,15 +459,15 @@ fn shouldKeepRow(
 ) !bool {
     const columns_to_check = opts.subset orelse blk: {
         // Check all columns
-        var names = std.ArrayList([]const u8).init(std.heap.page_allocator);
-        defer names.deinit();
+        var names = try std.ArrayList([]const u8).initCapacity(std.heap.page_allocator, df.columnCount());
+        defer names.deinit(std.heap.page_allocator);
 
         var col_idx: u32 = 0;
         while (col_idx < df.columnCount()) : (col_idx += 1) {
-            try names.append(df.column_descs[col_idx].name);
+            try names.append(std.heap.page_allocator, df.column_descs[col_idx].name);
         }
 
-        break :blk try names.toOwnedSlice();
+        break :blk try names.toOwnedSlice(std.heap.page_allocator);
     };
 
     var has_missing = false;
@@ -522,7 +544,6 @@ pub fn isna(
                 .value_type = .Bool,
                 .data = .{ .Bool = mask },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         .Float64 => blk: {
@@ -539,7 +560,6 @@ pub fn isna(
                 .value_type = .Bool,
                 .data = .{ .Bool = mask },
                 .length = series.length,
-                .allocator_owned = true,
             };
         },
         else => error.TypeMismatch,
@@ -562,8 +582,8 @@ pub fn notna(
     std.debug.assert(series.length > 0); // Need data
     std.debug.assert(series.length <= MAX_ROWS); // Reasonable limit
 
-    var mask_series = try isna(series, allocator);
-    defer if (mask_series.allocator_owned) allocator.free(mask_series.data.Bool);
+    const mask_series = try isna(series, allocator);
+    defer allocator.free(mask_series.data.Bool);
 
     // Invert mask
     var inverted = try allocator.alloc(bool, series.length);
@@ -582,6 +602,5 @@ pub fn notna(
         .value_type = .Bool,
         .data = .{ .Bool = inverted },
         .length = series.length,
-        .allocator_owned = true,
     };
 }

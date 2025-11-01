@@ -242,7 +242,7 @@ pub const RollingWindow = struct {
     }
 
     /// Compute rolling standard deviation
-    pub fn std(self: *const RollingWindow, allocator: Allocator) !Series {
+    pub fn stddev(self: *const RollingWindow, allocator: Allocator) !Series {
         // Tiger Style: Assertions
         std.debug.assert(self.window_size > 0);
         std.debug.assert(self.series.length > 0);
@@ -259,20 +259,20 @@ pub const RollingWindow = struct {
                     const window_len = i - start + 1;
 
                     // Compute mean
-                    var sum: f64 = 0.0;
+                    var window_sum: f64 = 0.0;
                     var j: u32 = start;
                     while (j <= i) : (j += 1) {
-                        sum += @as(f64, @floatFromInt(data[j]));
+                        window_sum += @as(f64, @floatFromInt(data[j]));
                     }
-                    const window_mean = sum / @as(f64, @floatFromInt(window_len));
+                    const window_mean = window_sum / @as(f64, @floatFromInt(window_len));
 
                     // Compute variance
                     var variance: f64 = 0.0;
                     j = start;
                     while (j <= i) : (j += 1) {
                         const val = @as(f64, @floatFromInt(data[j]));
-                        const diff = val - window_mean;
-                        variance += diff * diff;
+                        const delta = val - window_mean;
+                        variance += delta * delta;
                     }
                     variance /= @as(f64, @floatFromInt(window_len));
 
@@ -287,19 +287,19 @@ pub const RollingWindow = struct {
                     const window_len = i - start + 1;
 
                     // Compute mean
-                    var sum: f64 = 0.0;
+                    var window_sum: f64 = 0.0;
                     var j: u32 = start;
                     while (j <= i) : (j += 1) {
-                        sum += data[j];
+                        window_sum += data[j];
                     }
-                    const window_mean = sum / @as(f64, @floatFromInt(window_len));
+                    const window_mean = window_sum / @as(f64, @floatFromInt(window_len));
 
                     // Compute variance
                     var variance: f64 = 0.0;
                     j = start;
                     while (j <= i) : (j += 1) {
-                        const diff = data[j] - window_mean;
-                        variance += diff * diff;
+                        const delta = data[j] - window_mean;
+                        variance += delta * delta;
                     }
                     variance /= @as(f64, @floatFromInt(window_len));
 

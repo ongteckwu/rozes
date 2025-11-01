@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const types = @import("types.zig");
 const DataFrame = @import("dataframe.zig").DataFrame;
 const Series = @import("series.zig").Series;
+const StringColumn = @import("series.zig").StringColumn;
 const ColumnDesc = types.ColumnDesc;
 const ValueType = types.ValueType;
 const RowRef = @import("dataframe.zig").RowRef;
@@ -720,4 +721,305 @@ test "Integration: filter DataFrame with string column" {
     const filt_ages_data = filt_ages.asInt64().?;
     try testing.expectEqual(@as(i64, 30), filt_ages_data[0]);
     try testing.expectEqual(@as(i64, 35), filt_ages_data[1]);
+}
+
+/// Creates a deep copy of a DataFrame
+///
+/// Args:
+///   - df: Source DataFrame to clone
+///
+/// Returns: New DataFrame with copied data
+///
+/// **Complexity**: O(n*m) where n=rows, m=columns
+/// **Memory**: Allocates full copy of all data
+///
+/// Example:
+/// ```zig
+/// var cloned = try df.clone();
+/// defer cloned.deinit();
+/// // cloned is independent of df
+/// ```
+pub fn clone(df: *const DataFrame) !DataFrame {
+    std.debug.assert(df.columnCount() > 0); // Must have columns
+    std.debug.assert(df.len() <= MAX_ROWS); // Within row limit
+
+    // Get all column names
+    const allocator = df.getAllocator();
+    var column_names = try allocator.alloc([]const u8, df.columnCount());
+    defer allocator.free(column_names);
+
+    var col_idx: u32 = 0;
+    while (col_idx < MAX_COLS and col_idx < df.columnCount()) : (col_idx += 1) {
+        column_names[col_idx] = df.column_descs[col_idx].name;
+    }
+    std.debug.assert(col_idx == df.columnCount()); // Got all column names
+
+    // Use select() to create a full copy
+    return select(df, column_names);
+}
+
+/// Replaces a column in a DataFrame with a new Series
+///
+/// Args:
+///   - df: Source DataFrame
+///   - column_name: Name of column to replace
+///   - new_series: New Series data to replace with
+///
+/// Returns: New DataFrame with replaced column
+///
+/// **Requirements**:
+///   - Column must exist in DataFrame
+///   - new_series.length must equal df.len()
+///   - new_series name is ignored (column_name is used)
+///
+/// **Complexity**: O(n*m) where n=rows, m=columns (full copy)
+///
+/// Example:
+/// ```zig
+/// const lower_names = try string_ops.lower(df.column("name").?, allocator);
+/// var updated = try df.replaceColumn("name", lower_names);
+/// defer updated.deinit();
+/// ```
+pub fn replaceColumn(
+    df: *const DataFrame,
+    column_name: []const u8,
+    new_series: Series,
+) !DataFrame {
+    std.debug.assert(column_name.len > 0); // Valid column name
+    std.debug.assert(new_series.length == df.len()); // Matching row count
+    std.debug.assert(df.columnCount() > 0); // Must have columns
+
+    // Verify column exists
+    if (!df.hasColumn(column_name)) {
+        return error.ColumnNotFound;
+    }
+
+    // Verify row count matches
+    if (new_series.length != df.len()) {
+        logError("replaceColumn: Series length ({}) != DataFrame length ({})", .{ new_series.length, df.len() });
+        return error.LengthMismatch;
+    }
+
+    // Create new DataFrame by cloning
+    var new_df = try clone(df);
+    errdefer new_df.deinit();
+
+    // Find the column index
+    const col_index = df.columnIndex(column_name).?;
+
+    // Get the destination column
+    const dst_col = &new_df.columns[col_index];
+    const new_df_allocator = new_df.getAllocator();
+
+    // If types don't match, we need to free old data and allocate new data
+    const types_match = dst_col.value_type == new_series.value_type;
+
+    if (!types_match) {
+        // Free old column data
+        switch (dst_col.value_type) {
+            .Int64 => new_df_allocator.free(dst_col.data.Int64),
+            .Float64 => new_df_allocator.free(dst_col.data.Float64),
+            .Bool => new_df_allocator.free(dst_col.data.Bool),
+            .String => dst_col.data.String.deinit(new_df_allocator),
+            .Categorical => dst_col.data.Categorical.deinit(new_df_allocator),
+            .Null => {},
+        }
+
+        // Update the column's value type
+        dst_col.value_type = new_series.value_type;
+    }
+
+    // Replace the data based on type
+    switch (new_series.value_type) {
+        .Int64 => {
+            const src_data = new_series.asInt64().?;
+            if (types_match) {
+                const dst_data = dst_col.asInt64Buffer().?;
+                @memcpy(dst_data[0..src_data.len], src_data);
+            } else {
+                const new_data = try new_df_allocator.alloc(i64, new_series.length);
+                @memcpy(new_data, src_data);
+                dst_col.data = .{ .Int64 = new_data };
+            }
+        },
+        .Float64 => {
+            const src_data = new_series.asFloat64().?;
+            if (types_match) {
+                const dst_data = dst_col.asFloat64Buffer().?;
+                @memcpy(dst_data[0..src_data.len], src_data);
+            } else {
+                const new_data = try new_df_allocator.alloc(f64, new_series.length);
+                @memcpy(new_data, src_data);
+                dst_col.data = .{ .Float64 = new_data };
+            }
+        },
+        .Bool => {
+            const src_data = new_series.asBool().?;
+            if (types_match) {
+                const dst_data = dst_col.asBoolBuffer().?;
+                @memcpy(dst_data[0..src_data.len], src_data);
+            } else {
+                const new_data = try new_df_allocator.alloc(bool, new_series.length);
+                @memcpy(new_data, src_data);
+                dst_col.data = .{ .Bool = new_data };
+            }
+        },
+        .String => {
+            const src_string_col = new_series.asStringColumn().?;
+
+            // Create a new StringColumn and copy all strings
+            var new_string_col = StringColumn.init(new_df_allocator, src_string_col.count, @intCast(src_string_col.buffer.len)) catch |err| {
+                return err;
+            };
+
+            // Copy each string from new_series
+            var str_idx: u32 = 0;
+            while (str_idx < MAX_ROWS and str_idx < src_string_col.count) : (str_idx += 1) {
+                const str = src_string_col.get(str_idx);
+                try new_string_col.append(new_df_allocator, str);
+            }
+            std.debug.assert(str_idx == src_string_col.count); // Copied all strings
+
+            // Free old string column and replace with new one
+            dst_col.data.String.deinit(new_df_allocator);
+            dst_col.data = .{ .String = new_string_col };
+        },
+        .Categorical => {
+            const src_cat_col = new_series.asCategoricalColumn().?;
+
+            // Extract all row indices
+            var all_indices = try new_df_allocator.alloc(u32, src_cat_col.count);
+            defer new_df_allocator.free(all_indices);
+
+            var i: u32 = 0;
+            while (i < MAX_ROWS and i < src_cat_col.count) : (i += 1) {
+                all_indices[i] = i;
+            }
+            std.debug.assert(i == src_cat_col.count); // Generated all indices
+
+            // Deep copy creates independent dictionary
+            const new_cat_col = try src_cat_col.deepCopyRows(
+                new_df_allocator,
+                all_indices,
+            );
+
+            // Store the deep copy
+            dst_col.data = .{ .Categorical = try new_df_allocator.create(@TypeOf(new_cat_col)) };
+            dst_col.data.Categorical.* = new_cat_col;
+        },
+        .Null => {}, // No data to copy
+    }
+
+    // Update column descriptor type if it changed
+    new_df.column_descs[col_index].value_type = new_series.value_type;
+    dst_col.value_type = new_series.value_type;
+
+    return new_df;
+}
+
+// ============================================================================
+// Tests for clone() and replaceColumn()
+// ============================================================================
+
+test "clone() creates independent copy" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create test DataFrame
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("name", .String, 0),
+        ColumnDesc.init("age", .Int64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 3);
+    defer df.deinit();
+
+    // Add data
+    const name_col = df.columnMut("name").?;
+    try name_col.appendString(allocator, "Alice");
+    try name_col.appendString(allocator, "Bob");
+    try name_col.appendString(allocator, "Charlie");
+
+    const age_col = df.columnMut("age").?;
+    const ages = age_col.asInt64Buffer().?;
+    ages[0] = 30;
+    ages[1] = 25;
+    ages[2] = 35;
+
+    try df.setRowCount(3);
+
+    // Clone the DataFrame
+    var cloned = try clone(&df);
+    defer cloned.deinit();
+
+    // Verify cloned has same data
+    try testing.expectEqual(@as(u32, 3), cloned.len());
+    try testing.expectEqual(@as(usize, 2), cloned.columnCount());
+
+    const cloned_names = cloned.column("name").?;
+    try testing.expectEqualStrings("Alice", cloned_names.getString(0).?);
+    try testing.expectEqualStrings("Bob", cloned_names.getString(1).?);
+    try testing.expectEqualStrings("Charlie", cloned_names.getString(2).?);
+
+    const cloned_ages = cloned.column("age").?;
+    const ages_data = cloned_ages.asInt64().?;
+    try testing.expectEqual(@as(i64, 30), ages_data[0]);
+    try testing.expectEqual(@as(i64, 25), ages_data[1]);
+    try testing.expectEqual(@as(i64, 35), ages_data[2]);
+}
+
+test "replaceColumn() replaces column data" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create test DataFrame
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("name", .String, 0),
+        ColumnDesc.init("age", .Int64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 3);
+    defer df.deinit();
+
+    // Add data
+    const name_col = df.columnMut("name").?;
+    try name_col.appendString(allocator, "Alice");
+    try name_col.appendString(allocator, "Bob");
+    try name_col.appendString(allocator, "Charlie");
+
+    const age_col = df.columnMut("age").?;
+    const ages = age_col.asInt64Buffer().?;
+    ages[0] = 30;
+    ages[1] = 25;
+    ages[2] = 35;
+
+    try df.setRowCount(3);
+
+    // Create new Series with different ages
+    var new_ages = try Series.init(allocator, "age", .Int64, 3);
+    defer new_ages.deinit(allocator);
+
+    const new_ages_buf = new_ages.asInt64Buffer().?;
+    new_ages_buf[0] = 40;
+    new_ages_buf[1] = 35;
+    new_ages_buf[2] = 45;
+    new_ages.length = 3;
+
+    // Replace the age column
+    var updated = try replaceColumn(&df, "age", new_ages);
+    defer updated.deinit();
+
+    // Verify updated has new ages
+    const updated_ages = updated.column("age").?;
+    const updated_ages_data = updated_ages.asInt64().?;
+    try testing.expectEqual(@as(i64, 40), updated_ages_data[0]);
+    try testing.expectEqual(@as(i64, 35), updated_ages_data[1]);
+    try testing.expectEqual(@as(i64, 45), updated_ages_data[2]);
+
+    // Verify original is unchanged
+    const orig_ages = df.column("age").?;
+    const orig_ages_data = orig_ages.asInt64().?;
+    try testing.expectEqual(@as(i64, 30), orig_ages_data[0]);
+    try testing.expectEqual(@as(i64, 25), orig_ages_data[1]);
+    try testing.expectEqual(@as(i64, 35), orig_ages_data[2]);
 }

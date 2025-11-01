@@ -335,6 +335,43 @@ pub const DataFrame = struct {
         return ops.drop(self, column_names);
     }
 
+    /// Creates a deep copy of this DataFrame
+    ///
+    /// Returns: New DataFrame with all data copied
+    ///
+    /// Example:
+    /// ```zig
+    /// var cloned = try df.clone();
+    /// defer cloned.deinit();
+    /// ```
+    pub fn clone(self: *const DataFrame) !DataFrame {
+        const ops = @import("operations.zig");
+        return ops.clone(self);
+    }
+
+    /// Replaces a column with new Series data
+    ///
+    /// Args:
+    ///   - column_name: Name of column to replace
+    ///   - new_series: New Series to replace with (length must match DataFrame)
+    ///
+    /// Returns: New DataFrame with replaced column
+    ///
+    /// Example:
+    /// ```zig
+    /// const lower_names = try string_ops.lower(df.column("name").?, allocator);
+    /// var updated = try df.replaceColumn("name", lower_names);
+    /// defer updated.deinit();
+    /// ```
+    pub fn replaceColumn(
+        self: *const DataFrame,
+        column_name: []const u8,
+        new_series: series_mod.Series,
+    ) !DataFrame {
+        const ops = @import("operations.zig");
+        return ops.replaceColumn(self, column_name, new_series);
+    }
+
     /// Filters rows based on a predicate
     ///
     /// Returns: New DataFrame with filtered rows

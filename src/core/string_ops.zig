@@ -21,10 +21,36 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Series = @import("series.zig").Series;
+const StringColumn = @import("series.zig").StringColumn;
 const ValueType = @import("types.zig").ValueType;
 
 /// Maximum string length for operations
 pub const MAX_STRING_LENGTH: u32 = 1_000_000;
+
+/// Helper function: Convert array of strings to StringColumn
+fn stringsToColumn(allocator: Allocator, strings: [][]const u8) !StringColumn {
+    std.debug.assert(strings.len > 0);
+    std.debug.assert(strings.len <= MAX_STRING_LENGTH);
+
+    // Calculate total buffer size needed
+    var total_len: u32 = 0;
+    for (strings) |str| {
+        total_len += @intCast(str.len);
+    }
+
+    // Create StringColumn with appropriate capacity
+    var col = try StringColumn.init(allocator, @intCast(strings.len), total_len);
+    errdefer col.deinit(allocator);
+
+    // Append each string
+    var i: u32 = 0;
+    while (i < MAX_STRING_LENGTH and i < strings.len) : (i += 1) {
+        try col.append(allocator, strings[i]);
+    }
+    std.debug.assert(i == strings.len); // Appended all strings
+
+    return col;
+}
 
 /// Convert all characters to lowercase
 ///
@@ -37,31 +63,38 @@ pub const MAX_STRING_LENGTH: u32 = 1_000_000;
 /// **Complexity**: O(n) where n = total string length
 pub fn lower(series: *const Series, allocator: Allocator) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
-    const result = try allocator.alloc([]const u8, series.length);
 
+    // Calculate total buffer size needed
+    var total_len: u32 = 0;
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
+        total_len += @intCast(str.len);
+    }
+
+    // Create output StringColumn
+    var result_col = try StringColumn.init(allocator, series.length, total_len);
+    errdefer result_col.deinit(allocator);
+
+    // Process each string
+    i = 0;
+    while (i < series.length) : (i += 1) {
+        const str = strings.get(i);
         if (str.len > MAX_STRING_LENGTH) return error.StringTooLong;
 
         // ✅ Validate UTF-8
         if (!std.unicode.utf8ValidateSlice(str)) {
-            // Clean up already allocated strings
-            var cleanup_idx: u32 = 0;
-            while (cleanup_idx < i) : (cleanup_idx += 1) {
-                allocator.free(result[cleanup_idx]);
-            }
-            allocator.free(result);
             return error.InvalidUtf8;
         }
 
         const lower_str = try allocator.alloc(u8, str.len);
+        defer allocator.free(lower_str);
 
         // Bounded character iteration (ASCII lowercasing only)
         var j: u32 = 0;
@@ -70,13 +103,13 @@ pub fn lower(series: *const Series, allocator: Allocator) !Series {
         }
         std.debug.assert(j == str.len); // Post-condition: processed all characters
 
-        result[i] = lower_str;
+        try result_col.append(allocator, lower_str);
     }
 
     return Series{
         .name = series.name,
-        .valueType = .String,
-        .data = .{ .String = result },
+        .value_type = .String,
+        .data = .{ .String = result_col },
         .length = series.length,
     };
 }
@@ -92,31 +125,38 @@ pub fn lower(series: *const Series, allocator: Allocator) !Series {
 /// **Complexity**: O(n) where n = total string length
 pub fn upper(series: *const Series, allocator: Allocator) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
-    const result = try allocator.alloc([]const u8, series.length);
 
+    // Calculate total buffer size needed
+    var total_len: u32 = 0;
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
+        total_len += @intCast(str.len);
+    }
+
+    // Create output StringColumn
+    var result_col = try StringColumn.init(allocator, series.length, total_len);
+    errdefer result_col.deinit(allocator);
+
+    // Process each string
+    i = 0;
+    while (i < series.length) : (i += 1) {
+        const str = strings.get(i);
         if (str.len > MAX_STRING_LENGTH) return error.StringTooLong;
 
         // ✅ Validate UTF-8
         if (!std.unicode.utf8ValidateSlice(str)) {
-            // Clean up already allocated strings
-            var cleanup_idx: u32 = 0;
-            while (cleanup_idx < i) : (cleanup_idx += 1) {
-                allocator.free(result[cleanup_idx]);
-            }
-            allocator.free(result);
             return error.InvalidUtf8;
         }
 
         const upper_str = try allocator.alloc(u8, str.len);
+        defer allocator.free(upper_str);
 
         // Bounded character iteration (ASCII uppercasing only)
         var j: u32 = 0;
@@ -125,13 +165,13 @@ pub fn upper(series: *const Series, allocator: Allocator) !Series {
         }
         std.debug.assert(j == str.len); // Post-condition: processed all characters
 
-        result[i] = upper_str;
+        try result_col.append(allocator, upper_str);
     }
 
     return Series{
         .name = series.name,
-        .valueType = .String,
-        .data = .{ .String = result },
+        .value_type = .String,
+        .data = .{ .String = result_col },
         .length = series.length,
     };
 }
@@ -139,28 +179,38 @@ pub fn upper(series: *const Series, allocator: Allocator) !Series {
 /// Remove leading and trailing whitespace
 pub fn trim(series: *const Series, allocator: Allocator) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
-    const result = try allocator.alloc([]const u8, series.length);
 
+    // Calculate approximate buffer size (trimmed strings will be ≤ original)
+    var total_len: u32 = 0;
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
-        const trimmed = std.mem.trim(u8, str, &std.ascii.whitespace);
-
-        const trimmed_copy = try allocator.alloc(u8, trimmed.len);
-        @memcpy(trimmed_copy, trimmed);
-        result[i] = trimmed_copy;
+        const str = strings.get(i);
+        total_len += @intCast(str.len);
     }
+
+    // Create output StringColumn
+    var result_col = try StringColumn.init(allocator, series.length, total_len);
+    errdefer result_col.deinit(allocator);
+
+    // Process each string
+    i = 0;
+    while (i < series.length) : (i += 1) {
+        const str = strings.get(i);
+        const trimmed = std.mem.trim(u8, str, &std.ascii.whitespace);
+        try result_col.append(allocator, trimmed);
+    }
+    std.debug.assert(i == series.length); // Post-condition: Processed all strings
 
     return Series{
         .name = series.name,
-        .valueType = .String,
-        .data = .{ .String = result },
+        .value_type = .String,
+        .data = .{ .String = result_col },
         .length = series.length,
     };
 }
@@ -173,25 +223,33 @@ pub fn strip(series: *const Series, allocator: Allocator) !Series {
 /// Check if string contains a substring
 pub fn contains(series: *const Series, allocator: Allocator, pattern: []const u8) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
-    std.debug.assert(pattern.len > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
-    if (pattern.len == 0) return error.EmptyPattern;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);
 
-    var i: u32 = 0;
-    while (i < series.length) : (i += 1) {
-        const str = strings[i];
-        result[i] = std.mem.indexOf(u8, str, pattern) != null;
+    // Empty pattern always matches (standard behavior)
+    if (pattern.len == 0) {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            result[i] = true;
+        }
+        std.debug.assert(i == series.length); // Post-condition: All values set to true
+    } else {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            const str = strings.get(i);
+            result[i] = std.mem.indexOf(u8, str, pattern) != null;
+        }
+        std.debug.assert(i == series.length); // Post-condition: Checked all strings
     }
 
     return Series{
         .name = series.name,
-        .valueType = .Bool,
+        .value_type = .Bool,
         .data = .{ .Bool = result },
         .length = series.length,
     };
@@ -200,19 +258,32 @@ pub fn contains(series: *const Series, allocator: Allocator, pattern: []const u8
 /// Replace all occurrences of a substring
 pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to: []const u8) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
     std.debug.assert(from.len > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
     if (from.len == 0) return error.EmptyPattern;
 
     const strings = series.data.String;
-    const result = try allocator.alloc([]const u8, series.length);
 
+    // Calculate approximate buffer size
+    var total_len: u32 = 0;
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
+        // Assume worst case: replacement might be longer
+        total_len += @intCast(str.len + to.len * 10); // Generous estimate
+    }
+
+    // Create output StringColumn
+    var result_col = try StringColumn.init(allocator, series.length, total_len);
+    errdefer result_col.deinit(allocator);
+
+    // Process each string
+    i = 0;
+    while (i < series.length) : (i += 1) {
+        const str = strings.get(i);
 
         // Count occurrences to allocate result
         var count: u32 = 0;
@@ -227,16 +298,36 @@ pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to
         }
 
         if (count == 0) {
-            // No matches, copy original
-            const copy = try allocator.alloc(u8, str.len);
-            @memcpy(copy, str);
-            result[i] = copy;
+            // No matches, append original
+            try result_col.append(allocator, str);
             continue;
         }
 
         // Allocate new string with replacements
-        const new_len = str.len - count * from.len + count * to.len;
+        // Tiger Style: Overflow check with wider type
+        const count_u64 = @as(u64, count);
+        const from_len_u64 = @as(u64, from.len);
+        const to_len_u64 = @as(u64, to.len);
+        const str_len_u64 = @as(u64, str.len);
+
+        const removed_bytes = count_u64 * from_len_u64;
+        const added_bytes = count_u64 * to_len_u64;
+
+        // Check for underflow
+        if (str_len_u64 < removed_bytes) {
+            return error.InvalidCalculation; // Should never happen
+        }
+
+        const new_len_u64 = str_len_u64 - removed_bytes + added_bytes;
+
+        // Check against max string length
+        if (new_len_u64 > MAX_STRING_LENGTH) {
+            return error.StringTooLong;
+        }
+
+        const new_len: usize = @intCast(new_len_u64);
         const replaced = try allocator.alloc(u8, new_len);
+        defer allocator.free(replaced);
 
         var write_pos: usize = 0;
         var read_pos: usize = 0;
@@ -258,46 +349,54 @@ pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to
             }
         }
 
-        result[i] = replaced;
+        try result_col.append(allocator, replaced);
     }
 
     return Series{
         .name = series.name,
-        .valueType = .String,
-        .data = .{ .String = result },
+        .value_type = .String,
+        .data = .{ .String = result_col },
         .length = series.length,
     };
 }
 
 /// Extract substring by slice
 pub fn slice(series: *const Series, allocator: Allocator, start: u32, end: u32) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
-    std.debug.assert(series.length > 0);
-    std.debug.assert(start <= end);
-
-    if (series.valueType != .String) return error.InvalidType;
+    // Tiger Style: Error checks FIRST (before assertions)
+    if (series.value_type != .String) return error.InvalidType;
     if (start > end) return error.InvalidSlice;
 
-    const strings = series.data.String;
-    const result = try allocator.alloc([]const u8, series.length);
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    std.debug.assert(series.length > 0);
+    std.debug.assert(start <= end); // Post-condition from error check
 
+    const strings = series.data.String;
+
+    // Calculate buffer size (safe now that we know start <= end)
+    const slice_len = end - start;
+    const total_len = series.length * slice_len;
+
+    // Create output StringColumn
+    var result_col = try StringColumn.init(allocator, series.length, total_len);
+    errdefer result_col.deinit(allocator);
+
+    // Process each string
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
         const actual_start = @min(start, @as(u32, @intCast(str.len)));
         const actual_end = @min(end, @as(u32, @intCast(str.len)));
 
         const sliced = str[actual_start..actual_end];
-        const sliced_copy = try allocator.alloc(u8, sliced.len);
-        @memcpy(sliced_copy, sliced);
-        result[i] = sliced_copy;
+        try result_col.append(allocator, sliced);
     }
+    std.debug.assert(i == series.length); // Post-condition: Processed all strings
 
     return Series{
         .name = series.name,
-        .valueType = .String,
-        .data = .{ .String = result },
+        .value_type = .String,
+        .data = .{ .String = result_col },
         .length = series.length,
     };
 }
@@ -305,22 +404,31 @@ pub fn slice(series: *const Series, allocator: Allocator, start: u32, end: u32) 
 /// Get string length for each element
 pub fn len(series: *const Series, allocator: Allocator) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
     const result = try allocator.alloc(i64, series.length);
 
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        result[i] = @intCast(strings[i].len);
+        const str_len = strings.get(i).len;
+
+        // Tiger Style: Bounds check (unlikely but safer)
+        if (str_len > std.math.maxInt(i64)) {
+            allocator.free(result);
+            return error.StringTooLong;
+        }
+
+        result[i] = @intCast(str_len);
     }
+    std.debug.assert(i == series.length); // Post-condition: Processed all strings
 
     return Series{
         .name = series.name,
-        .valueType = .Int64,
+        .value_type = .Int64,
         .data = .{ .Int64 = result },
         .length = series.length,
     };
@@ -361,11 +469,11 @@ pub const SplitResult = struct {
 /// Split string by delimiter (returns array of Series)
 pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8) !SplitResult {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
     std.debug.assert(delimiter.len > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
     if (delimiter.len == 0) return error.EmptyDelimiter;
 
     const strings = series.data.String;
@@ -374,7 +482,7 @@ pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8)
     var max_parts: u32 = 0;
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
         var count: u32 = 1;
         var pos: usize = 0;
         while (pos < str.len) {
@@ -397,7 +505,7 @@ pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8)
         const part_data = try allocator.alloc([]const u8, series.length);
         parts[part_idx] = Series{
             .name = series.name,
-            .valueType = .String,
+            .value_type = .String,
             .data = .{ .String = part_data },
             .length = series.length,
         };
@@ -406,7 +514,7 @@ pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8)
     // Second pass: split and populate
     i = 0;
     while (i < series.length) : (i += 1) {
-        const str = strings[i];
+        const str = strings.get(i);
         var current_part: u32 = 0;
         var start_pos: usize = 0;
 
@@ -446,24 +554,31 @@ pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8)
 /// Check if string starts with a prefix
 pub fn startsWith(series: *const Series, allocator: Allocator, prefix: []const u8) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
-    std.debug.assert(prefix.len > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);
 
-    var i: u32 = 0;
-    while (i < series.length) : (i += 1) {
-        const str = strings[i];
-        result[i] = std.mem.startsWith(u8, str, prefix);
+    // Empty prefix always matches (standard behavior)
+    if (prefix.len == 0) {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            result[i] = true;
+        }
+    } else {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            const str = strings.get(i);
+            result[i] = std.mem.startsWith(u8, str, prefix);
+        }
     }
 
     return Series{
         .name = series.name,
-        .valueType = .Bool,
+        .value_type = .Bool,
         .data = .{ .Bool = result },
         .length = series.length,
     };
@@ -472,24 +587,31 @@ pub fn startsWith(series: *const Series, allocator: Allocator, prefix: []const u
 /// Check if string ends with a suffix
 pub fn endsWith(series: *const Series, allocator: Allocator, suffix: []const u8) !Series {
     // Tiger Style: Assertions
-    std.debug.assert(series.valueType == .String);
+    std.debug.assert(series.value_type == .String);
     std.debug.assert(series.length > 0);
-    std.debug.assert(suffix.len > 0);
 
-    if (series.valueType != .String) return error.InvalidType;
+    if (series.value_type != .String) return error.InvalidType;
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);
 
-    var i: u32 = 0;
-    while (i < series.length) : (i += 1) {
-        const str = strings[i];
-        result[i] = std.mem.endsWith(u8, str, suffix);
+    // Empty suffix always matches (standard behavior)
+    if (suffix.len == 0) {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            result[i] = true;
+        }
+    } else {
+        var i: u32 = 0;
+        while (i < series.length) : (i += 1) {
+            const str = strings.get(i);
+            result[i] = std.mem.endsWith(u8, str, suffix);
+        }
     }
 
     return Series{
         .name = series.name,
-        .valueType = .Bool,
+        .value_type = .Bool,
         .data = .{ .Bool = result },
         .length = series.length,
     };

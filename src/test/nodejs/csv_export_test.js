@@ -4,13 +4,21 @@
  * Tests: toCSV() with various options and edge cases
  */
 
-const { Rozes } = require('../../../dist/index.js');
+import { Rozes } from '../../../dist/index.js';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 async function main() {
   console.log('🧪 Testing CSV Export (Priority 5)\n');
 
-  // Initialize Rozes
-  const rozes = await Rozes.init();
+  // Initialize Rozes by reading Wasm binary directly (for Node.js)
+  const wasmPath = join(__dirname, '../../../dist/rozes.wasm');
+  const wasmBinary = readFileSync(wasmPath);
+  const rozes = await Rozes.init(wasmBinary);
   console.log('✅ Rozes initialized (version:', rozes.version, ')\n');
 
   let passedTests = 0;

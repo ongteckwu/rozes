@@ -182,7 +182,7 @@ test "RollingWindow.std computes correct rolling standard deviation" {
     };
 
     const window = try RollingWindow.init(&series, 3);
-    const result = try window.std(allocator);
+    const result = try window.stddev(allocator);
     defer allocator.free(result.data.Float64);
 
     // Expected: [0, 1, 0.943, 0, 0.471]

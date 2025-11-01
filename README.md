@@ -28,6 +28,11 @@ const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
 
 ### 🚀 **Performance** - 3-10× Faster Than JavaScript Libraries
 
+- Uses a Parallel Parsing Mechanism
+- SIMD for speed optimizations for very large csvs
+- Radix Joins / String Interning and other optimizations for speed and memory
+- WebGPU optimizations (future)
+
 | Operation            | Rozes       | Papa Parse | csv-parse | Speedup        |
 | -------------------- | ----------- | ---------- | --------- | -------------- |
 | Parse 100K rows      | **53.67ms** | 207.67ms   | 427.48ms  | **3.87-7.96×** |
@@ -560,7 +565,7 @@ _Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast mode, averaged
 ### Guides
 
 - **[Performance Guide](./docs/PERFORMANCE.md)** - SIMD, parallel execution, lazy evaluation, and optimization tips (Milestone 1.2.0)
-- **[Query Optimization Cookbook](./docs/QUERY_OPTIMIZATION.md)** - 18 practical recipes with before/after examples (Milestone 1.2.0)
+- **[Query Optimization Cookbook](./docs/QUERY_OPTIMIZATION_GUIDE.md)** - 18 practical recipes with before/after examples (Milestone 1.2.0)
 - **[Memory Management](./docs/MEMORY_MANAGEMENT.md)** - Manual vs automatic cleanup (autoCleanup option)
 - **[Migration Guide](./docs/MIGRATION.md)** - Migrate from Papa Parse, csv-parse, pandas, or Polars
 - **[Changelog](./CHANGELOG.md)** - Version history and release notes
@@ -586,6 +591,25 @@ _Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast mode, averaged
 ---
 
 ## Known Limitations (1.2.0)
+
+**⚠️ Missing Value Representation (MVP Limitation)**
+
+**Current Behavior**:
+- **Int64 columns**: `0` represents missing values
+  - ⚠️ **Limitation**: Cannot distinguish between legitimate zero and missing
+  - Example: `[0, 1, 2]` with `fillna(99)` becomes `[99, 1, 2]` (zero incorrectly replaced)
+- **Float64 columns**: `NaN` represents missing values
+  - ✅ **Correct**: NaN has no other meaning
+  - Example: `[NaN, 1.5, 2.0]` with `fillna(0.0)` becomes `[0.0, 1.5, 2.0]`
+
+**Workarounds**:
+- Use Float64 columns if you need to preserve zeros
+- Avoid `fillna()`, `dropna()`, `isna()` operations on Int64 columns with legitimate zeros
+
+**Planned Fix (v1.4.0)**:
+- Add null bitmap to Series struct (similar to pandas/Arrow)
+- Support explicit null tracking for all types
+- Breaking change: Will require migration for existing code
 
 **Node.js API limitations** (coming in future releases):
 
