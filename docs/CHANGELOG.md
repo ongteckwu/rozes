@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2025-11-07 (In Progress)
+
+### Added
+
+**Phase 1-2: CSV Export, DataFrame Utilities, Missing Data & String Operations**
+- CSV file I/O: `toCSVFile()` method for Node.js with export options (delimiter, quote char, headers, line endings)
+- DataFrame utilities: `drop()`, `rename()`, `unique()`, `dropDuplicates()`, `describe()`, `sample()`
+- Missing data operations: `dropna()`, `isna()`, `notna()`
+- String operations (9/10): `str.lower()`, `str.upper()`, `str.trim()`, `str.contains()`, `str.replace()`, `str.slice()`, `str.startsWith()`, `str.endsWith()`, `str.len()`
+- DataFrame infrastructure: `clone()` and `replaceColumn()` for column transformations
+
+**Phase 3-4: Advanced Aggregations, Multi-Column Sort, Joins, Window & Reshape**
+- Advanced aggregations: `median()`, `quantile()`, `valueCounts()`, `corrMatrix()`, `rank()`
+- Multi-column sort: `sortBy([{column, order}])` with per-column ordering
+- Additional join types: `rightJoin()`, `outerJoin()`, `crossJoin()` (completes all 5 join types)
+- Window operations: `rollingSum()`, `rollingMean()`, `rollingMin()`, `rollingMax()`, `rollingStd()`, `expandingSum()`, `expandingMean()`
+- Reshape operations: `pivot()`, `melt()`, `transpose()`, `stack()`, `unstack()`
+
+**Phase 5: Apache Arrow & Lazy Evaluation (WASM Layer)**
+- Apache Arrow WASM bindings: `rozes_toArrow()`, `rozes_fromArrow()` with schema mapping to JSON
+- LazyDataFrame WASM bindings: `rozes_lazy()`, `rozes_lazy_select()`, `rozes_lazy_limit()`, `rozes_collect()`, `rozes_lazy_free()`
+- Query optimization: predicate/projection pushdown in Zig layer
+
+### Changed
+
+- JavaScript API now includes 34+ operations with `df.str.*` namespace (pandas-like)
+- WASM module size: 105KB → 266KB (includes all Node.js API operations)
+- Test coverage: 200+ new Node.js integration tests across 8 test files
+
+### Fixed
+
+- String valueCounts() implemented (was NotImplemented)
+- rank() type hint stripping for column name resolution
+- Right join double-swap bug (join.zig:468)
+- Pivot table String/Categorical index column support
+- Empty string handling in all string operations
+- Buffer pointer validation for empty StringColumns
+- Zig 0.15 ArrayList API compatibility in query_plan.zig
+
+### Tests
+
+- CSV export: 20/20 tests passing
+- DataFrame utils: 72/72 tests passing (30 basic + 42 edge cases)
+- Missing data: 47/47 tests passing (11 basic + 36 edge cases)
+- String operations: 76/76 tests passing (26 basic + 50 edge cases)
+- Advanced aggregations: All 5 methods verified working
+- Sort & join: 31/31 tests passing (17 sort + 14 join)
+- Window operations: Test file created
+- Reshape operations: 29 tests (running)
+- Apache Arrow: 16/16 tests (schema export/import, round-trip, edge cases)
+- Lazy evaluation: 24/24 tests (select, limit, chaining, correctness vs eager)
+- Memory leak tests: 1000 iterations for all operations
+- **Total: 286+ Node.js integration tests**
+
+---
+
 ## [1.2.0] - 2025-11-01
 
 ### Added

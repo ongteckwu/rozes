@@ -486,6 +486,256 @@ class DataFrame {
     }
 
     /**
+     * Drop columns by name
+     * @param {string[]} columnNames - Array of column names to drop
+     * @returns {DataFrame} - New DataFrame without the specified columns
+     * @example
+     * const df = DataFrame.fromCSV('a,b,c\n1,2,3\n4,5,6\n', { hasHeader: true });
+     * const dropped = df.drop(['b']);
+     * console.log(dropped.columns); // ['a', 'c']
+     */
+    drop(columnNames) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!Array.isArray(columnNames) || columnNames.length === 0) {
+            throw new Error('drop() requires a non-empty array of column names');
+        }
+
+        const colNamesJSON = JSON.stringify(columnNames);
+        const colNamesBytes = new TextEncoder().encode(colNamesJSON);
+        const colNamesPtr = wasm.instance.exports.rozes_alloc(colNamesBytes.length);
+
+        if (colNamesPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column names buffer');
+        }
+
+        const colNamesBuffer = new Uint8Array(wasm.memory.buffer, colNamesPtr, colNamesBytes.length);
+        colNamesBuffer.set(colNamesBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_drop(
+                this._handle,
+                colNamesPtr,
+                colNamesBytes.length
+            );
+
+            checkResult(newHandle, `Failed to drop columns: ${columnNames.join(', ')}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(colNamesPtr, colNamesBytes.length);
+        }
+    }
+
+    /**
+     * Rename a column
+     * @param {string} oldName - Current column name
+     * @param {string} newName - New column name
+     * @returns {DataFrame} - New DataFrame with renamed column
+     * @example
+     * const df = DataFrame.fromCSV('old_name\n1\n2\n', { hasHeader: true });
+     * const renamed = df.rename('old_name', 'new_name');
+     * console.log(renamed.columns); // ['new_name']
+     */
+    rename(oldName, newName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!oldName || typeof oldName !== 'string') {
+            throw new Error('rename() requires oldName as non-empty string');
+        }
+        if (!newName || typeof newName !== 'string') {
+            throw new Error('rename() requires newName as non-empty string');
+        }
+
+        const oldBytes = new TextEncoder().encode(oldName);
+        const newBytes = new TextEncoder().encode(newName);
+
+        const oldPtr = wasm.instance.exports.rozes_alloc(oldBytes.length);
+        const newPtr = wasm.instance.exports.rozes_alloc(newBytes.length);
+
+        if (oldPtr === 0 || newPtr === 0) {
+            if (oldPtr > 0) wasm.instance.exports.rozes_free_buffer(oldPtr, oldBytes.length);
+            if (newPtr > 0) wasm.instance.exports.rozes_free_buffer(newPtr, newBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate rename buffers');
+        }
+
+        const oldBuffer = new Uint8Array(wasm.memory.buffer, oldPtr, oldBytes.length);
+        const newBuffer = new Uint8Array(wasm.memory.buffer, newPtr, newBytes.length);
+        oldBuffer.set(oldBytes);
+        newBuffer.set(newBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rename(
+                this._handle,
+                oldPtr,
+                oldBytes.length,
+                newPtr,
+                newBytes.length
+            );
+
+            checkResult(newHandle, `Failed to rename column '${oldName}' to '${newName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(oldPtr, oldBytes.length);
+            wasm.instance.exports.rozes_free_buffer(newPtr, newBytes.length);
+        }
+    }
+
+    /**
+     * Get unique values in a column
+     * @param {string} columnName - Name of the column
+     * @returns {DataFrame} - New DataFrame with unique values
+     * @example
+     * const df = DataFrame.fromCSV('category\nA\nB\nA\nC\nB\n', { hasHeader: true });
+     * const unique = df.unique('category');
+     * console.log(unique.shape.rows); // 3 (A, B, C)
+     */
+    unique(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('unique() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_unique(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to get unique values from column '${columnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Remove duplicate rows based on specified columns
+     * @param {string[]} columnNames - Array of column names to check for duplicates
+     * @returns {DataFrame} - New DataFrame with duplicates removed
+     * @example
+     * const df = DataFrame.fromCSV('a,b\n1,2\n1,2\n3,4\n', { hasHeader: true });
+     * const dedup = df.dropDuplicates(['a', 'b']);
+     * console.log(dedup.shape.rows); // 2
+     */
+    dropDuplicates(columnNames) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!Array.isArray(columnNames) || columnNames.length === 0) {
+            throw new Error('dropDuplicates() requires a non-empty array of column names');
+        }
+
+        const colNamesJSON = JSON.stringify(columnNames);
+        const colNamesBytes = new TextEncoder().encode(colNamesJSON);
+        const colNamesPtr = wasm.instance.exports.rozes_alloc(colNamesBytes.length);
+
+        if (colNamesPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column names buffer');
+        }
+
+        const colNamesBuffer = new Uint8Array(wasm.memory.buffer, colNamesPtr, colNamesBytes.length);
+        colNamesBuffer.set(colNamesBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_dropDuplicates(
+                this._handle,
+                colNamesPtr,
+                colNamesBytes.length
+            );
+
+            checkResult(newHandle, `Failed to drop duplicates on columns: ${columnNames.join(', ')}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(colNamesPtr, colNamesBytes.length);
+        }
+    }
+
+    /**
+     * Generate descriptive statistics (count, mean, std, min, max, etc.)
+     * @param {string} [columnName] - Optional: column name. If not provided, describes all numeric columns
+     * @returns {Object} - Statistics object with count, mean, std, min, max, median, q25, q75
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n', { hasHeader: true });
+     * const stats = df.describe('value');
+     * console.log(stats); // { count: 5, mean: 30, std: 15.81, min: 10, max: 50, ... }
+     */
+    describe(columnName) {
+        this._checkNotFreed();
+
+        if (columnName) {
+            // Single column description
+            return {
+                count: this.shape.rows,
+                mean: this.mean(columnName),
+                std: this.stddev(columnName),
+                min: this.min(columnName),
+                max: this.max(columnName),
+                median: this.median(columnName),
+                q25: this.quantile(columnName, 0.25),
+                q75: this.quantile(columnName, 0.75)
+            };
+        } else {
+            // All numeric columns
+            const result = {};
+            for (const col of this.columns) {
+                try {
+                    result[col] = this.describe(col);
+                } catch (e) {
+                    // Skip non-numeric columns
+                }
+            }
+            return result;
+        }
+    }
+
+    /**
+     * Random sample of rows
+     * @param {number} n - Number of rows to sample
+     * @returns {DataFrame} - New DataFrame with sampled rows
+     * @example
+     * const df = DataFrame.fromCSV('value\n1\n2\n3\n4\n5\n', { hasHeader: true });
+     * const sampled = df.sample(3);
+     * console.log(sampled.shape.rows); // 3
+     */
+    sample(n) {
+        this._checkNotFreed();
+
+        if (typeof n !== 'number' || n <= 0) {
+            throw new Error('sample() requires a positive number');
+        }
+
+        // Create array of all row indices
+        const allIndices = Array.from({ length: this.shape.rows }, (_, i) => i);
+
+        // Fisher-Yates shuffle
+        for (let i = allIndices.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [allIndices[i], allIndices[j]] = [allIndices[j], allIndices[i]];
+        }
+
+        // Take first n indices
+        const sampleIndices = allIndices.slice(0, Math.min(n, allIndices.length)).sort((a, b) => a - b);
+
+        // Filter to keep only sampled rows
+        let rowIdx = 0;
+        return this.filter(() => {
+            const include = sampleIndices.includes(rowIdx);
+            rowIdx++;
+            return include;
+        });
+    }
+
+    /**
      * Get first n rows of DataFrame
      *
      * @param {number} n - Number of rows to return
@@ -1017,6 +1267,39 @@ class DataFrame {
     }
 
     /**
+     * Export DataFrame to CSV file (Node.js only)
+     * @param {string} filePath - Path to write CSV file
+     * @param {Object} [options] - CSV export options (same as toCSV)
+     * @param {string} [options.delimiter=','] - Field delimiter
+     * @param {boolean} [options.header=true] - Include header row
+     * @param {string} [options.quoteChar='"'] - Quote character for strings
+     * @param {string} [options.lineEnding='\n'] - Line ending character(s)
+     * @returns {void}
+     * @example
+     * const df = DataFrame.fromCSV('name,age\nAlice,30\nBob,25\n', { hasHeader: true });
+     * df.toCSVFile('./output.csv', { delimiter: ',', header: true });
+     */
+    async toCSVFile(filePath, options = {}) {
+        this._checkNotFreed();
+
+        // Check if running in Node.js
+        if (typeof process === 'undefined' || !process.versions || !process.versions.node) {
+            throw new Error('toCSVFile() is only available in Node.js environment');
+        }
+
+        if (!filePath || typeof filePath !== 'string') {
+            throw new Error('toCSVFile() requires a non-empty file path');
+        }
+
+        // Generate CSV string
+        const csvString = this.toCSV(options);
+
+        // Write to file using Node.js fs
+        const fs = await import('fs');
+        fs.writeFileSync(filePath, csvString, 'utf8');
+    }
+
+    /**
      * Free DataFrame memory
      *
      * **Manual memory management (default)**: You must call this when done to prevent leaks.
@@ -1520,6 +1803,505 @@ class DataFrame {
             );
 
             checkResult(newHandle, `Failed to rank column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    // ========================================================================
+    // Missing Data Operations (Phase 1-2 - Milestone 1.3.0)
+    // ========================================================================
+
+    /**
+     * Check for missing values in a column
+     * @param {string} columnName - Name of the column to check
+     * @returns {DataFrame} - New DataFrame with boolean column indicating nulls
+     * @example
+     * const df = DataFrame.fromCSV('name,age\nAlice,30\nBob,\nCharlie,25\n', { hasHeader: true, inferTypes: true });
+     * const mask = df.isna('age');
+     * console.log(mask.column('age_isna')); // Uint8Array [0, 1, 0]
+     */
+    isna(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('isna() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_isna(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to check for missing values in column '${columnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Check for non-missing values in a column
+     * @param {string} columnName - Name of the column to check
+     * @returns {DataFrame} - New DataFrame with boolean column indicating non-nulls
+     * @example
+     * const df = DataFrame.fromCSV('name,age\nAlice,30\nBob,\nCharlie,25\n', { hasHeader: true, inferTypes: true });
+     * const mask = df.notna('age');
+     * console.log(mask.column('age_notna')); // Uint8Array [1, 0, 1]
+     */
+    notna(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('notna() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_notna(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to check for non-missing values in column '${columnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Drop rows with missing values
+     * @param {string} [columnName] - Optional: Name of the column to check for nulls. If not provided, drops rows with ANY null value.
+     * @returns {DataFrame} - New DataFrame with rows containing nulls removed
+     * @example
+     * // Drop rows with ANY null values
+     * const clean1 = df.dropna();
+     *
+     * // Drop rows with null in specific column
+     * const df = DataFrame.fromCSV('name,age\nAlice,30\nBob,\nCharlie,25\n', { hasHeader: true, inferTypes: true });
+     * const clean2 = df.dropna('age');
+     * console.log(clean2.shape.rows); // 2 (Bob row removed)
+     */
+    dropna(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        // If no column specified, drop all rows with any nulls
+        if (!columnName) {
+            const newHandle = wasm.instance.exports.rozes_dropna(this._handle);
+            checkResult(newHandle, 'Failed to drop rows with missing values');
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        }
+
+        // If column specified, use filter to keep only non-null rows in that column
+        return this.filter((row) => {
+            const value = row.get(columnName);
+            return value !== null && value !== undefined;
+        });
+    }
+
+    // ========================================================================
+    // String Operations (Phase 1-2 - Milestone 1.3.0)
+    // ========================================================================
+
+    /**
+     * Convert string column to lowercase
+     * @param {string} columnName - Name of the string column
+     * @returns {DataFrame} - New DataFrame with lowercase strings
+     * @example
+     * const df = DataFrame.fromCSV('name\nALICE\nBOB\n', { hasHeader: true });
+     * const lower = df.strLower('name');
+     */
+    strLower(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strLower() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_lower(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to convert column '${columnName}' to lowercase`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Convert string column to uppercase
+     * @param {string} columnName - Name of the string column
+     * @returns {DataFrame} - New DataFrame with uppercase strings
+     * @example
+     * const df = DataFrame.fromCSV('name\nalice\nbob\n', { hasHeader: true });
+     * const upper = df.strUpper('name');
+     */
+    strUpper(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strUpper() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_upper(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to convert column '${columnName}' to uppercase`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Trim whitespace from string column
+     * @param {string} columnName - Name of the string column
+     * @returns {DataFrame} - New DataFrame with trimmed strings
+     * @example
+     * const df = DataFrame.fromCSV('name\n  alice  \n  bob  \n', { hasHeader: true });
+     * const trimmed = df.strTrim('name');
+     */
+    strTrim(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strTrim() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_trim(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to trim whitespace from column '${columnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Check if strings contain a pattern
+     * @param {string} columnName - Name of the string column
+     * @param {string} pattern - Pattern to search for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\ngoodbye\n', { hasHeader: true });
+     * const contains = df.strContains('text', 'world');
+     */
+    strContains(columnName, pattern) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strContains() requires a non-empty column name');
+        }
+        if (!pattern || typeof pattern !== 'string') {
+            throw new Error('strContains() requires a non-empty pattern');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const patternBytes = new TextEncoder().encode(pattern);
+
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const patternPtr = wasm.instance.exports.rozes_alloc(patternBytes.length);
+
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        const patternBuffer = new Uint8Array(wasm.memory.buffer, patternPtr, patternBytes.length);
+        nameBuffer.set(nameBytes);
+        patternBuffer.set(patternBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_contains(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                patternPtr,
+                patternBytes.length
+            );
+
+            checkResult(newHandle, `Failed to check if column '${columnName}' contains '${pattern}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            wasm.instance.exports.rozes_free_buffer(patternPtr, patternBytes.length);
+        }
+    }
+
+    /**
+     * Replace substring in string column
+     * @param {string} columnName - Name of the string column
+     * @param {string} oldStr - Substring to replace
+     * @param {string} newStr - Replacement substring
+     * @returns {DataFrame} - New DataFrame with replaced strings
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello world\ngoodbye world\n', { hasHeader: true });
+     * const replaced = df.strReplace('text', 'world', 'universe');
+     */
+    strReplace(columnName, oldStr, newStr) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strReplace() requires a non-empty column name');
+        }
+        if (typeof oldStr !== 'string') {
+            throw new Error('strReplace() requires oldStr as string');
+        }
+        if (typeof newStr !== 'string') {
+            throw new Error('strReplace() requires newStr as string');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const oldBytes = new TextEncoder().encode(oldStr);
+        const newBytes = new TextEncoder().encode(newStr);
+
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const oldPtr = wasm.instance.exports.rozes_alloc(oldBytes.length);
+        const newPtr = wasm.instance.exports.rozes_alloc(newBytes.length);
+
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        const oldBuffer = new Uint8Array(wasm.memory.buffer, oldPtr, oldBytes.length);
+        const newBuffer = new Uint8Array(wasm.memory.buffer, newPtr, newBytes.length);
+        nameBuffer.set(nameBytes);
+        oldBuffer.set(oldBytes);
+        newBuffer.set(newBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_replace(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                oldPtr,
+                oldBytes.length,
+                newPtr,
+                newBytes.length
+            );
+
+            checkResult(newHandle, `Failed to replace '${oldStr}' with '${newStr}' in column '${columnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            wasm.instance.exports.rozes_free_buffer(oldPtr, oldBytes.length);
+            wasm.instance.exports.rozes_free_buffer(newPtr, newBytes.length);
+        }
+    }
+
+    /**
+     * Extract substring from string column
+     * @param {string} columnName - Name of the string column
+     * @param {number} start - Start index (inclusive)
+     * @param {number} end - End index (exclusive)
+     * @returns {DataFrame} - New DataFrame with sliced strings
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n', { hasHeader: true });
+     * const sliced = df.strSlice('text', 0, 3); // 'hel', 'wor'
+     */
+    strSlice(columnName, start, end) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strSlice() requires a non-empty column name');
+        }
+        if (typeof start !== 'number' || start < 0) {
+            throw new Error('strSlice() requires start >= 0');
+        }
+        if (typeof end !== 'number' || end < start) {
+            throw new Error('strSlice() requires end >= start');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_slice(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                start,
+                end
+            );
+
+            checkResult(newHandle, `Failed to slice column '${columnName}'[${start}:${end}]`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Check if strings start with prefix
+     * @param {string} columnName - Name of the string column
+     * @param {string} prefix - Prefix to check for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n', { hasHeader: true });
+     * const starts = df.strStartsWith('text', 'he'); // true, false
+     */
+    strStartsWith(columnName, prefix) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strStartsWith() requires a non-empty column name');
+        }
+        if (!prefix || typeof prefix !== 'string') {
+            throw new Error('strStartsWith() requires a non-empty prefix');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const prefixBytes = new TextEncoder().encode(prefix);
+
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const prefixPtr = wasm.instance.exports.rozes_alloc(prefixBytes.length);
+
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        const prefixBuffer = new Uint8Array(wasm.memory.buffer, prefixPtr, prefixBytes.length);
+        nameBuffer.set(nameBytes);
+        prefixBuffer.set(prefixBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_startsWith(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                prefixPtr,
+                prefixBytes.length
+            );
+
+            checkResult(newHandle, `Failed to check if column '${columnName}' starts with '${prefix}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            wasm.instance.exports.rozes_free_buffer(prefixPtr, prefixBytes.length);
+        }
+    }
+
+    /**
+     * Check if strings end with suffix
+     * @param {string} columnName - Name of the string column
+     * @param {string} suffix - Suffix to check for
+     * @returns {DataFrame} - New DataFrame with boolean column
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n', { hasHeader: true });
+     * const ends = df.strEndsWith('text', 'lo'); // true, false
+     */
+    strEndsWith(columnName, suffix) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strEndsWith() requires a non-empty column name');
+        }
+        if (!suffix || typeof suffix !== 'string') {
+            throw new Error('strEndsWith() requires a non-empty suffix');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const suffixBytes = new TextEncoder().encode(suffix);
+
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const suffixPtr = wasm.instance.exports.rozes_alloc(suffixBytes.length);
+
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        const suffixBuffer = new Uint8Array(wasm.memory.buffer, suffixPtr, suffixBytes.length);
+        nameBuffer.set(nameBytes);
+        suffixBuffer.set(suffixBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_endsWith(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                suffixPtr,
+                suffixBytes.length
+            );
+
+            checkResult(newHandle, `Failed to check if column '${columnName}' ends with '${suffix}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            wasm.instance.exports.rozes_free_buffer(suffixPtr, suffixBytes.length);
+        }
+    }
+
+    /**
+     * Get string lengths
+     * @param {string} columnName - Name of the string column
+     * @returns {DataFrame} - New DataFrame with Int64 column containing string lengths
+     * @example
+     * const df = DataFrame.fromCSV('text\nhello\nworld\n', { hasHeader: true });
+     * const lens = df.strLen('text'); // 5, 5
+     */
+    strLen(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('strLen() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_str_len(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to get string lengths for column '${columnName}'`);
             return new DataFrame(newHandle, wasm, this._autoCleanup);
         } finally {
             wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
@@ -2362,6 +3144,140 @@ class DataFrame {
     }
 
     /**
+     * Export DataFrame schema to Apache Arrow JSON format
+     *
+     * Note: MVP implementation exports schema only (not data).
+     * Full Arrow IPC format with zero-copy data transfer coming in future release.
+     *
+     * @returns {Object} - Arrow schema as JSON object
+     *
+     * @example
+     * const df = DataFrame.fromCSV('name,age\nAlice,30\nBob,25\n');
+     * const arrowSchema = df.toArrow();
+     * console.log(arrowSchema);
+     * // {
+     * //   schema: {
+     * //     fields: [
+     * //       { name: 'name', type: { name: 'utf8' } },
+     * //       { name: 'age', type: { name: 'int', bitWidth: 64, isSigned: true } }
+     * //     ]
+     * //   }
+     * // }
+     */
+    toArrow() {
+        this._checkNotFreed();
+
+        const wasm = this._wasm;
+        const bufferSize = 8192; // 8KB buffer for schema JSON
+        const bufferPtr = wasm.instance.exports.rozes_alloc(bufferSize);
+        if (bufferPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate buffer for Arrow schema');
+        }
+
+        try {
+            const writtenPtr = wasm.instance.exports.rozes_alloc(4); // u32 for bytes written
+            if (writtenPtr === 0) {
+                throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate written counter');
+            }
+
+            try {
+                const result = wasm.instance.exports.rozes_toArrow(
+                    this._handle,
+                    bufferPtr,
+                    bufferSize,
+                    writtenPtr
+                );
+
+                checkResult(result, 'Failed to export DataFrame to Arrow format');
+
+                const written = new Uint32Array(wasm.memory.buffer, writtenPtr, 1)[0];
+                const jsonBytes = new Uint8Array(wasm.memory.buffer, bufferPtr, written);
+                const jsonStr = new TextDecoder().decode(jsonBytes);
+
+                return JSON.parse(jsonStr);
+            } finally {
+                wasm.instance.exports.rozes_free_buffer(writtenPtr, 4);
+            }
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(bufferPtr, bufferSize);
+        }
+    }
+
+    /**
+     * Import DataFrame from Apache Arrow JSON schema
+     *
+     * Note: MVP implementation imports schema only (not data).
+     * Full Arrow IPC format with zero-copy data transfer coming in future release.
+     *
+     * @param {Object} arrowSchema - Arrow schema as JSON object
+     * @param {boolean} [autoCleanup=true] - Enable automatic memory cleanup
+     * @returns {DataFrame} - New DataFrame from Arrow schema
+     *
+     * @example
+     * const schema = {
+     *   schema: {
+     *     fields: [
+     *       { name: 'name', type: { name: 'utf8' } },
+     *       { name: 'age', type: { name: 'int', bitWidth: 64, isSigned: true } }
+     *     ]
+     *   }
+     * };
+     * const df = DataFrame.fromArrow(schema);
+     */
+    static fromArrow(arrowSchema, autoCleanup = true) {
+        const wasm = DataFrame._wasm;
+        if (!wasm) {
+            throw new Error('Rozes not initialized. Call Rozes.init() first.');
+        }
+
+        const jsonStr = JSON.stringify(arrowSchema);
+        const jsonBytes = new TextEncoder().encode(jsonStr);
+        const jsonPtr = wasm.instance.exports.rozes_alloc(jsonBytes.length);
+        if (jsonPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate buffer for Arrow schema');
+        }
+
+        try {
+            const jsonArray = new Uint8Array(wasm.memory.buffer, jsonPtr, jsonBytes.length);
+            jsonArray.set(jsonBytes);
+
+            const handle = wasm.instance.exports.rozes_fromArrow(jsonPtr, jsonBytes.length);
+            checkResult(handle, 'Failed to import DataFrame from Arrow format');
+
+            return new DataFrame(handle, wasm, autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(jsonPtr, jsonBytes.length);
+        }
+    }
+
+    /**
+     * Create a lazy DataFrame for query optimization
+     *
+     * Lazy evaluation delays execution until `.collect()` is called,
+     * allowing the query optimizer to apply transformations like
+     * predicate pushdown and projection pushdown.
+     *
+     * @returns {LazyDataFrame} - Lazy DataFrame wrapper
+     *
+     * @example
+     * const df = DataFrame.fromCSV('name,age,score\nAlice,30,95\nBob,25,87\nCharlie,35,91\n');
+     * const result = df.lazy()
+     *   .select(['name', 'age'])
+     *   .limit(2)
+     *   .collect();
+     * console.log(result.shape); // { rows: 2, cols: 2 }
+     */
+    lazy() {
+        this._checkNotFreed();
+
+        const wasm = this._wasm;
+        const lazyHandle = wasm.instance.exports.rozes_lazy(this._handle);
+        checkResult(lazyHandle, 'Failed to create LazyDataFrame');
+
+        return new LazyDataFrame(lazyHandle, wasm, this._autoCleanup);
+    }
+
+    /**
      * Pretty-print DataFrame info
      * @returns {string}
      */
@@ -2934,6 +3850,169 @@ class StringAccessor {
 }
 
 /**
+ * LazyDataFrame - Lazy evaluation wrapper for query optimization
+ *
+ * Delays execution until `.collect()` is called, allowing the query
+ * optimizer to apply transformations like predicate pushdown and
+ * projection pushdown for improved performance.
+ *
+ * @example
+ * const df = DataFrame.fromCSV('name,age,score\nAlice,30,95\nBob,25,87\nCharlie,35,91\n');
+ * const result = df.lazy()
+ *   .select(['name', 'age'])
+ *   .limit(2)
+ *   .collect();
+ */
+class LazyDataFrame {
+    /**
+     * @private
+     */
+    constructor(handle, wasm, autoCleanup = true) {
+        this._handle = handle;
+        this._wasm = wasm;
+        this._autoCleanup = autoCleanup;
+        this._freed = false;
+
+        // Register for automatic cleanup if enabled
+        if (autoCleanup) {
+            finalizationRegistry.register(this, handle);
+        }
+    }
+
+    /**
+     * Add a select (projection) operation to the query plan
+     *
+     * Selects specific columns from the DataFrame. Combined with other
+     * operations, enables projection pushdown optimization.
+     *
+     * @param {string[]} columnNames - Array of column names to select
+     * @returns {LazyDataFrame} - This LazyDataFrame for chaining
+     *
+     * @example
+     * const result = df.lazy()
+     *   .select(['name', 'age'])
+     *   .collect();
+     */
+    select(columnNames) {
+        this._checkNotFreed();
+
+        if (!Array.isArray(columnNames) || columnNames.length === 0) {
+            throw new Error('select() requires non-empty array of column names');
+        }
+
+        const wasm = this._wasm;
+        const jsonStr = JSON.stringify(columnNames);
+        const jsonBytes = new TextEncoder().encode(jsonStr);
+        const jsonPtr = wasm.instance.exports.rozes_alloc(jsonBytes.length);
+        if (jsonPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate buffer for column names');
+        }
+
+        try {
+            const jsonArray = new Uint8Array(wasm.memory.buffer, jsonPtr, jsonBytes.length);
+            jsonArray.set(jsonBytes);
+
+            const result = wasm.instance.exports.rozes_lazy_select(
+                this._handle,
+                jsonPtr,
+                jsonBytes.length
+            );
+
+            checkResult(result, `Failed to add select operation`);
+            return this; // Return this for chaining
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(jsonPtr, jsonBytes.length);
+        }
+    }
+
+    /**
+     * Add a limit operation to the query plan
+     *
+     * Limits the number of rows returned. Can be optimized by the query
+     * planner to avoid processing unnecessary rows.
+     *
+     * @param {number} n - Maximum number of rows to return
+     * @returns {LazyDataFrame} - This LazyDataFrame for chaining
+     *
+     * @example
+     * const result = df.lazy()
+     *   .limit(10)
+     *   .collect();
+     */
+    limit(n) {
+        this._checkNotFreed();
+
+        if (!Number.isInteger(n) || n < 0) {
+            throw new Error('limit() requires non-negative integer');
+        }
+
+        const wasm = this._wasm;
+        const result = wasm.instance.exports.rozes_lazy_limit(this._handle, n);
+        checkResult(result, `Failed to add limit operation`);
+
+        return this; // Return this for chaining
+    }
+
+    /**
+     * Execute the query plan and return a DataFrame
+     *
+     * Applies query optimizations (predicate pushdown, projection pushdown)
+     * and executes all operations to produce the final DataFrame.
+     *
+     * @returns {DataFrame} - Resulting DataFrame after optimization and execution
+     *
+     * @example
+     * const result = df.lazy()
+     *   .select(['name', 'age'])
+     *   .limit(2)
+     *   .collect();
+     * console.log(result.shape); // { rows: 2, cols: 2 }
+     */
+    collect() {
+        this._checkNotFreed();
+
+        const wasm = this._wasm;
+        const dfHandle = wasm.instance.exports.rozes_collect(this._handle);
+        checkResult(dfHandle, 'Failed to collect LazyDataFrame');
+
+        // LazyDataFrame is consumed after collect()
+        this.free();
+
+        return new DataFrame(dfHandle, wasm, this._autoCleanup);
+    }
+
+    /**
+     * Manually free LazyDataFrame memory
+     *
+     * After calling free(), this LazyDataFrame cannot be used.
+     * If autoCleanup is enabled, this happens automatically on garbage collection.
+     */
+    free() {
+        if (this._freed) {
+            return;
+        }
+
+        // Unregister from finalization registry
+        if (this._autoCleanup) {
+            finalizationRegistry.unregister(this);
+        }
+
+        // Free Wasm memory
+        this._wasm.instance.exports.rozes_lazy_free(this._handle);
+        this._freed = true;
+    }
+
+    /**
+     * @private
+     */
+    _checkNotFreed() {
+        if (this._freed) {
+            throw new Error('LazyDataFrame has been freed');
+        }
+    }
+}
+
+/**
  * Rozes namespace - main entry point
  */
 class Rozes {
@@ -2953,9 +4032,26 @@ class Rozes {
             // Direct buffer passed (Node.js with fs.readFileSync)
             buffer = wasmPath instanceof Uint8Array ? wasmPath.buffer : wasmPath;
         } else {
-            // Path or URL - fetch it
-            const response = await fetch(wasmPath);
-            buffer = await response.arrayBuffer();
+            // Path or URL - handle Node.js vs browser
+            if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+                // Node.js: use fs.readFileSync
+                const fs = await import('fs');
+                const path = await import('path');
+                const { fileURLToPath } = await import('url');
+
+                // Resolve path relative to this module
+                const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+                const resolvedPath = wasmPath.startsWith('./') || wasmPath.startsWith('../')
+                    ? path.join(moduleDir, wasmPath)
+                    : wasmPath;
+
+                const wasmBuffer = fs.readFileSync(resolvedPath);
+                buffer = wasmBuffer.buffer.slice(wasmBuffer.byteOffset, wasmBuffer.byteOffset + wasmBuffer.byteLength);
+            } else {
+                // Browser: use fetch
+                const response = await fetch(wasmPath);
+                buffer = await response.arrayBuffer();
+            }
         }
 
         // Instantiate with WASI imports (complete snapshot_preview1)
@@ -3059,15 +4155,16 @@ class Rozes {
 }
 
 // Export for ES modules
-export { Rozes, DataFrame, RozesError };
+export { Rozes, DataFrame, LazyDataFrame, RozesError };
 
 // Also support CommonJS and browser globals
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { Rozes, DataFrame, RozesError };
+    module.exports = { Rozes, DataFrame, LazyDataFrame, RozesError };
 }
 
 if (typeof window !== 'undefined') {
     window.Rozes = Rozes;
     window.DataFrame = DataFrame;
+    window.LazyDataFrame = LazyDataFrame;
     window.RozesError = RozesError;
 }

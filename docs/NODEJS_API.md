@@ -1,91 +1,32 @@
-# Rozes Node.js API Reference
+# Rozes Node.js/TypeScript API Reference
 
-**Version**: 1.0.0
-**Last Updated**: 2025-10-31
+**Version**: 1.3.0 | **Last Updated**: 2025-11-08
 
-High-performance DataFrame library for Node.js powered by WebAssembly. 3-10× faster than Papa Parse and csv-parse.
+Complete API reference for all DataFrame operations available in the Node.js/TypeScript environment.
 
 ---
 
 ## Table of Contents
 
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [Initialization](#initialization)
-4. [DataFrame Creation](#dataframe-creation)
-5. [DataFrame Properties](#dataframe-properties)
-6. [DataFrame Methods](#dataframe-methods)
-7. [CSV Options](#csv-options)
-8. [TypeScript Types](#typescript-types)
-9. [Error Handling](#error-handling)
-10. [Memory Management](#memory-management)
-11. [Performance Tips](#performance-tips)
-12. [Complete Examples](#complete-examples)
-
----
-
-## Installation
-
-```bash
-npm install rozes
-```
-
-**Requirements**:
-- Node.js 14+ (LTS versions recommended)
-- No native dependencies (pure WASM)
-
----
-
-## Quick Start
-
-### CommonJS
-
-```javascript
-const { Rozes } = require('rozes');
-
-async function main() {
-  const rozes = await Rozes.init();
-  const df = rozes.DataFrame.fromCSV("age,score\n30,95.5\n25,87.3");
-
-  console.log(df.shape); // { rows: 2, cols: 2 }
-  console.log(df.columns); // ['age', 'score']
-
-  const ages = df.column('age'); // Float64Array [30, 25]
-  console.log(Array.from(ages));
-
-  // Memory freed automatically! (Can still call df.free() for immediate cleanup)
-}
-
-main();
-```
-
-### ES Modules
-
-```javascript
-import { Rozes } from 'rozes';
-
-const rozes = await Rozes.init();
-const df = rozes.DataFrame.fromCSV("age,score\n30,95.5\n25,87.3");
-
-console.log(df.shape); // { rows: 2, cols: 2 }
-df.free();
-```
-
-### TypeScript
-
-```typescript
-import { Rozes, DataFrame } from 'rozes';
-
-const rozes: Rozes = await Rozes.init();
-const df: DataFrame = rozes.DataFrame.fromCSV("age,score\n30,95.5\n25,87.3");
-
-// Full autocomplete support
-const shape = df.shape; // { rows: number, cols: number }
-const columns = df.columns; // string[]
-const ages = df.column('age'); // Float64Array | Int32Array | BigInt64Array | null
-
-df.free();
-```
+1. [Initialization](#initialization)
+2. [DataFrame Creation](#dataframe-creation)
+3. [CSV Operations](#csv-operations)
+4. [DataFrame Utilities](#dataframe-utilities)
+5. [Column Operations](#column-operations)
+6. [Row Operations](#row-operations)
+7. [Missing Data](#missing-data)
+8. [String Operations](#string-operations)
+9. [Numeric Operations](#numeric-operations)
+10. [Aggregations](#aggregations)
+11. [Advanced Aggregations](#advanced-aggregations)
+12. [Window Operations](#window-operations)
+13. [Sorting](#sorting)
+14. [Joins](#joins)
+15. [Grouping](#grouping)
+16. [Reshape Operations](#reshape-operations)
+17. [Apache Arrow](#apache-arrow)
+18. [Lazy Evaluation](#lazy-evaluation)
+19. [Memory Management](#memory-management)
 
 ---
 
@@ -93,917 +34,1381 @@ df.free();
 
 ### `Rozes.init(wasmPath?: string): Promise<Rozes>`
 
-Initialize the Rozes library by loading the WebAssembly module.
+Initialize the Rozes WASM module.
 
-**Parameters**:
-- `wasmPath` (optional): Custom path to WASM file. Defaults to bundled `rozes.wasm`.
+**Parameters:**
+- `wasmPath` (optional): Path to `rozes.wasm` file. Auto-detected in most environments.
 
-**Returns**: Promise resolving to initialized `Rozes` instance
+**Returns:** Promise<Rozes> - Initialized Rozes instance
 
-**Example**:
-
+**Example:**
 ```javascript
-// Use bundled WASM (default)
+import { Rozes } from 'rozes';
+
+// Browser
 const rozes = await Rozes.init();
 
-// Use custom WASM path
-const rozes = await Rozes.init('./custom-path/rozes.wasm');
+// Node.js (auto-detection)
+const rozes = await Rozes.init();
 
-// Access version
-console.log(rozes.version); // "1.0.0"
+// Node.js (explicit path)
+const rozes = await Rozes.init('./node_modules/rozes/zig-out/bin/rozes.wasm');
+
+const DataFrame = rozes.DataFrame;
 ```
-
-**Notes**:
-- Must be called before any DataFrame operations
-- Only needs to be called once per application
-- WASM module is ~62KB (35KB gzipped)
 
 ---
 
 ## DataFrame Creation
 
-### `DataFrame.fromCSV(csvText: string, options?: CSVOptions): DataFrame`
+### `DataFrame.fromCSV(csvString, options?): DataFrame`
 
-Parse CSV string into DataFrame.
+Create DataFrame from CSV string.
 
-**Parameters**:
-- `csvText`: CSV data as string
-- `options` (optional): Parsing options (see [CSV Options](#csv-options))
+**Parameters:**
+- `csvString: string` - CSV data as string
+- `options` (optional):
+  - `delimiter?: string` - Column delimiter (default: `,`)
+  - `hasHeader?: boolean` - Has header row (default: `true`)
+  - `quoteChar?: string` - Quote character (default: `"`)
+  - `escapeChar?: string` - Escape character (default: `"`)
 
-**Returns**: New `DataFrame` instance
+**Returns:** DataFrame
 
-**Example**:
-
+**Example:**
 ```javascript
-const csv = `name,age,score
-Alice,30,95.5
-Bob,25,87.3
-Charlie,35,91.0`;
+const csv = `name,age,city
+Alice,30,NYC
+Bob,25,LA`;
 
-const df = rozes.DataFrame.fromCSV(csv);
-console.log(df.shape); // { rows: 3, cols: 3 }
+const df = DataFrame.fromCSV(csv);
+df.show();
+//   name    age  city
+// 0 Alice    30  NYC
+// 1 Bob      25  LA
 ```
 
-**Performance**: Parses 1M rows in ~570ms (1.75M rows/sec)
+### `DataFrame.create(columns, data): DataFrame`
+
+Create DataFrame from column definitions and data arrays.
+
+**Parameters:**
+- `columns: ColumnDef[]` - Array of column definitions
+- `data: any[][]` - 2D array of row data
+
+**Example:**
+```javascript
+const columns = [
+  { name: 'name', type: 'String' },
+  { name: 'age', type: 'Int64' }
+];
+
+const data = [
+  ['Alice', 30],
+  ['Bob', 25]
+];
+
+const df = DataFrame.create(columns, data);
+```
 
 ---
 
-### `DataFrame.fromCSVFile(filePath: string, options?: CSVOptions): DataFrame`
+## CSV Operations
 
-Load CSV from file (Node.js only).
+### `df.toCSV(options?): string`
 
-**Parameters**:
-- `filePath`: Path to CSV file (absolute or relative)
-- `options` (optional): Parsing options (see [CSV Options](#csv-options))
+Export DataFrame to CSV string.
 
-**Returns**: New `DataFrame` instance
+**Parameters:**
+- `options` (optional):
+  - `includeHeaders?: boolean` - Include header row (default: `true`)
+  - `delimiter?: string` - Column delimiter (default: `,`)
+  - `lineEnding?: string` - Line ending (default: `\n`)
 
-**Example**:
+**Returns:** string - CSV formatted data
 
+**Example:**
 ```javascript
-const df = rozes.DataFrame.fromCSVFile('data.csv');
-console.log(`Loaded ${df.shape.rows} rows`);
-df.free();
+const csv = df.toCSV();
+console.log(csv);
+// name,age,city
+// Alice,30,NYC
+// Bob,25,LA
+
+// Custom delimiter
+const tsv = df.toCSV({ delimiter: '\t' });
+
+// Without headers
+const csvNoHeader = df.toCSV({ includeHeaders: false });
 ```
 
-**Notes**:
-- File is read synchronously (async version planned for 1.1.0)
-- Works with relative and absolute paths
-- Supports large files (tested up to 1M rows)
+### `df.toCSVFile(path, options?): void` (Node.js only)
+
+Export DataFrame to CSV file.
+
+**Parameters:**
+- `path: string` - Output file path
+- `options` (optional): Same as `toCSV()`
+
+**Example:**
+```javascript
+import fs from 'fs';
+
+// Method 1: Using toCSV() + fs.writeFileSync
+const csvData = df.toCSV();
+fs.writeFileSync('output.csv', csvData, 'utf8');
+
+// Method 2: Direct export (if implemented)
+// df.toCSVFile('output.csv');
+```
 
 ---
 
-## DataFrame Properties
+## DataFrame Utilities
 
-### `df.shape: DataFrameShape`
+### `df.shape: { rows: number, cols: number }`
 
 Get DataFrame dimensions.
 
+**Returns:** Object with `rows` and `cols` properties
+
+**Example:**
 ```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-console.log(df.shape); // { rows: 1000, cols: 5 }
-```
+console.log(df.shape);
+// { rows: 100, cols: 5 }
 
-**Type**:
-```typescript
-interface DataFrameShape {
-  rows: number; // Number of rows
-  cols: number; // Number of columns
-}
+console.log(`DataFrame has ${df.shape.rows} rows`);
 ```
-
----
 
 ### `df.columns: string[]`
 
 Get column names.
 
+**Returns:** Array of column name strings
+
+**Example:**
 ```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-console.log(df.columns); // ['name', 'age', 'score']
-```
-
-**Returns**: Array of column names in order
-
----
-
-### `df.length: number`
-
-Get number of rows (same as `df.shape.rows`).
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-console.log(df.length); // 1000
-```
-
----
-
-## DataFrame Methods
-
-### `df.column(name: string): TypedArray | null`
-
-Get column data as typed array (zero-copy access).
-
-**Parameters**:
-- `name`: Column name
-
-**Returns**:
-- `Float64Array` for Float64 columns
-- `Int32Array` for Int32 columns
-- `BigInt64Array` for Int64 columns
-- `null` if column not found
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Numeric columns
-const ages = df.column('age'); // Float64Array
-const ids = df.column('id');   // BigInt64Array
+console.log(df.columns);
+// ['name', 'age', 'city', 'score']
 
 // Check if column exists
-if (ages) {
-  const avgAge = ages.reduce((a, b) => a + b) / ages.length;
-  console.log(`Average age: ${avgAge}`);
+if (df.columns.includes('age')) {
+  // ...
 }
+```
 
-// Handle BigInt columns
-if (ids) {
-  for (const id of ids) {
-    console.log(Number(id)); // Convert BigInt to Number if needed
+### `df.dtypes: { [key: string]: string }`
+
+Get column data types.
+
+**Returns:** Object mapping column names to types
+
+**Example:**
+```javascript
+console.log(df.dtypes);
+// { name: 'String', age: 'Int64', score: 'Float64' }
+```
+
+### `df.show(n?): void`
+
+Display DataFrame (console output).
+
+**Parameters:**
+- `n?: number` - Number of rows to show (default: all)
+
+**Example:**
+```javascript
+df.show();      // Show all rows
+df.show(10);    // Show first 10 rows
+```
+
+### `df.head(n?): DataFrame`
+
+Get first N rows.
+
+**Parameters:**
+- `n?: number` - Number of rows (default: 5)
+
+**Returns:** New DataFrame with first N rows
+
+**Example:**
+```javascript
+const top5 = df.head();      // First 5 rows
+const top10 = df.head(10);   // First 10 rows
+```
+
+### `df.tail(n?): DataFrame`
+
+Get last N rows.
+
+**Parameters:**
+- `n?: number` - Number of rows (default: 5)
+
+**Returns:** New DataFrame with last N rows
+
+**Example:**
+```javascript
+const bottom5 = df.tail();    // Last 5 rows
+const bottom10 = df.tail(10); // Last 10 rows
+```
+
+### `df.drop(columnNames): DataFrame`
+
+Drop columns by name.
+
+**Parameters:**
+- `columnNames: string | string[]` - Column name(s) to drop
+
+**Returns:** New DataFrame without specified columns
+
+**Example:**
+```javascript
+// Drop single column
+const df2 = df.drop('age');
+
+// Drop multiple columns
+const df3 = df.drop(['age', 'city']);
+```
+
+### `df.rename(oldName, newName): DataFrame`
+
+Rename a column.
+
+**Parameters:**
+- `oldName: string` - Current column name
+- `newName: string` - New column name
+
+**Returns:** New DataFrame with renamed column
+
+**Example:**
+```javascript
+const df2 = df.rename('age', 'years');
+console.log(df2.columns);
+// ['name', 'years', 'city']
+```
+
+### `df.unique(columnName): any[]`
+
+Get unique values in column.
+
+**Parameters:**
+- `columnName: string` - Column name
+
+**Returns:** Array of unique values
+
+**Example:**
+```javascript
+const cities = df.unique('city');
+console.log(cities);
+// ['NYC', 'LA', 'Chicago', 'Boston']
+```
+
+### `df.dropDuplicates(columnNames?): DataFrame`
+
+Remove duplicate rows.
+
+**Parameters:**
+- `columnNames?: string[]` - Columns to check for duplicates (default: all)
+
+**Returns:** New DataFrame without duplicates
+
+**Example:**
+```javascript
+// Drop rows with duplicate values in all columns
+const df2 = df.dropDuplicates();
+
+// Drop rows with duplicate city values
+const df3 = df.dropDuplicates(['city']);
+
+// Drop based on multiple columns
+const df4 = df.dropDuplicates(['name', 'age']);
+```
+
+### `df.describe(columnName?): DataFrame`
+
+Statistical summary of numeric columns.
+
+**Parameters:**
+- `columnName?: string` - Specific column (default: all numeric)
+
+**Returns:** DataFrame with statistics (count, mean, std, min, max, etc.)
+
+**Example:**
+```javascript
+// Describe all numeric columns
+const stats = df.describe();
+stats.show();
+
+// Describe specific column
+const ageStats = df.describe('age');
+```
+
+### `df.sample(n, seed?): DataFrame`
+
+Random sample of rows.
+
+**Parameters:**
+- `n: number` - Number of rows to sample
+- `seed?: number` - Random seed for reproducibility
+
+**Returns:** DataFrame with N randomly sampled rows
+
+**Example:**
+```javascript
+// Random 10 rows
+const sample = df.sample(10);
+
+// Reproducible sample
+const sample2 = df.sample(10, 42);
+```
+
+---
+
+## Column Operations
+
+### `df.select(columnNames): DataFrame`
+
+Select specific columns.
+
+**Parameters:**
+- `columnNames: string[]` - Column names to select
+
+**Returns:** New DataFrame with only selected columns
+
+**Example:**
+```javascript
+const subset = df.select(['name', 'age']);
+subset.show();
+//   name    age
+// 0 Alice    30
+// 1 Bob      25
+```
+
+### `df.column(columnName): Column | null`
+
+Get column data.
+
+**Parameters:**
+- `columnName: string` - Column name
+
+**Returns:** Column object or null if not found
+
+**Example:**
+```javascript
+const ageCol = df.column('age');
+if (ageCol) {
+  console.log(ageCol.data);  // TypedArray or Array
+  console.log(ageCol.type);  // 'Int64', 'Float64', etc.
+}
+```
+
+### `df.withColumn(columnName, values): DataFrame`
+
+Add or replace column.
+
+**Parameters:**
+- `columnName: string` - New column name
+- `values: any[]` - Column values (must match row count)
+
+**Returns:** New DataFrame with added/replaced column
+
+**Example:**
+```javascript
+// Add new column
+const df2 = df.withColumn('category', ['A', 'B', 'A', 'B']);
+
+// Replace existing column
+const df3 = df.withColumn('age', [31, 26, 36, 29]);
+
+// Computed column (from existing data)
+const ages = df.column('age').data;
+const doubledAges = Array.from(ages).map(a => a * 2);
+const df4 = df.withColumn('age_doubled', doubledAges);
+```
+
+---
+
+## Row Operations
+
+### `df.filter(predicate): DataFrame`
+
+Filter rows by condition.
+
+**Parameters:**
+- `predicate: (row: RowRef) => boolean` - Filter function
+
+**Returns:** New DataFrame with rows matching predicate
+
+**Example:**
+```javascript
+// Filter by age
+const adults = df.filter(row => row.get('age') >= 30);
+
+// Filter by string match
+const nycOnly = df.filter(row => row.get('city') === 'NYC');
+
+// Multiple conditions
+const filtered = df.filter(row =>
+  row.get('age') > 25 && row.get('score') > 80
+);
+```
+
+### `df.slice(start, end): DataFrame`
+
+Get rows by index range.
+
+**Parameters:**
+- `start: number` - Start index (inclusive)
+- `end: number` - End index (exclusive)
+
+**Returns:** New DataFrame with sliced rows
+
+**Example:**
+```javascript
+const rows5to10 = df.slice(5, 10);  // Rows 5-9
+const first100 = df.slice(0, 100);  // Rows 0-99
+```
+
+---
+
+## Missing Data
+
+### `df.isna(columnName): DataFrame`
+
+Detect missing values.
+
+**Parameters:**
+- `columnName: string` - Column to check
+
+**Returns:** New DataFrame with boolean column `{columnName}_isna`
+
+**Example:**
+```javascript
+const result = df.isna('age');
+result.show();
+//   name    age  age_isna
+// 0 Alice    30  false
+// 1 Bob      -   true
+// 2 Charlie  35  false
+```
+
+### `df.notna(columnName): DataFrame`
+
+Detect non-missing values.
+
+**Parameters:**
+- `columnName: string` - Column to check
+
+**Returns:** New DataFrame with boolean column `{columnName}_notna`
+
+**Example:**
+```javascript
+const result = df.notna('age');
+result.show();
+//   name    age  age_notna
+// 0 Alice    30  true
+// 1 Bob      -   false
+// 2 Charlie  35  true
+```
+
+### `df.dropna(columnName): DataFrame`
+
+Drop rows with missing values.
+
+**Parameters:**
+- `columnName: string` - Column to check
+
+**Returns:** New DataFrame without rows having null in specified column
+
+**Example:**
+```javascript
+// Remove rows where age is missing
+const cleaned = df.dropna('age');
+
+// Chain multiple dropna calls
+const fullyClean = df
+  .dropna('age')
+  .dropna('city')
+  .dropna('score');
+```
+
+### `df.fillna(columnName, fillValue): DataFrame`
+
+Fill missing values.
+
+**Parameters:**
+- `columnName: string` - Column to fill
+- `fillValue: any` - Value to use for missing data
+
+**Returns:** New DataFrame with filled values
+
+**Example:**
+```javascript
+// Fill missing ages with 0
+const df2 = df.fillna('age', 0);
+
+// Fill missing scores with mean
+const meanScore = df.mean('score');
+const df3 = df.fillna('score', meanScore);
+
+// Fill missing strings
+const df4 = df.fillna('city', 'Unknown');
+```
+
+---
+
+## String Operations
+
+All string operations create a new DataFrame with the transformed column.
+
+### `df.strLower(columnName): DataFrame`
+
+Convert strings to lowercase.
+
+**Example:**
+```javascript
+const df2 = df.strLower('email');
+// alice@example.com → alice@example.com
+// BOB@EXAMPLE.COM → bob@example.com
+```
+
+### `df.strUpper(columnName): DataFrame`
+
+Convert strings to uppercase.
+
+**Example:**
+```javascript
+const df2 = df.strUpper('product');
+// widget → WIDGET
+// gadget → GADGET
+```
+
+### `df.strTrim(columnName): DataFrame`
+
+Remove leading/trailing whitespace.
+
+**Example:**
+```javascript
+const df2 = df.strTrim('name');
+// "  Alice  " → "Alice"
+// "Bob" → "Bob"
+```
+
+### `df.strContains(columnName, pattern): DataFrame`
+
+Check if string contains substring.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `pattern: string` - Substring to search for
+
+**Returns:** New DataFrame with boolean column `{columnName}_contains`
+
+**Example:**
+```javascript
+const result = df.strContains('email', '@example.com');
+result.show();
+//   email                    email_contains
+// 0 alice@example.com         true
+// 1 bob@company.com           false
+```
+
+### `df.strReplace(columnName, old, new): DataFrame`
+
+Replace substring.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `old: string` - Substring to replace
+- `new: string` - Replacement substring
+
+**Example:**
+```javascript
+const df2 = df.strReplace('product', 'Widget', 'Component');
+// "Widget A" → "Component A"
+// "Gadget B" → "Gadget B"
+```
+
+### `df.strSlice(columnName, start, end): DataFrame`
+
+Extract substring.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `start: number` - Start index
+- `end: number` - End index (exclusive)
+
+**Example:**
+```javascript
+const df2 = df.strSlice('name', 0, 3);
+// "Alice" → "Ali"
+// "Bob" → "Bob"
+```
+
+### `df.strStartsWith(columnName, prefix): DataFrame`
+
+Check if string starts with prefix.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `prefix: string` - Prefix to check
+
+**Returns:** New DataFrame with boolean column `{columnName}_startswith`
+
+**Example:**
+```javascript
+const result = df.strStartsWith('product', 'Widget');
+//   product          product_startswith
+// 0 Widget A         true
+// 1 Gadget B         false
+```
+
+### `df.strEndsWith(columnName, suffix): DataFrame`
+
+Check if string ends with suffix.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `suffix: string` - Suffix to check
+
+**Returns:** New DataFrame with boolean column `{columnName}_endswith`
+
+**Example:**
+```javascript
+const result = df.strEndsWith('email', '.com');
+//   email                    email_endswith
+// 0 alice@example.com         true
+// 1 bob@example.org           false
+```
+
+### `df.strLen(columnName): DataFrame`
+
+Get string length.
+
+**Parameters:**
+- `columnName: string` - Column name
+
+**Returns:** New DataFrame with integer column `{columnName}_len`
+
+**Example:**
+```javascript
+const result = df.strLen('name');
+//   name     name_len
+// 0 Alice    5
+// 1 Bob      3
+```
+
+---
+
+## Numeric Operations
+
+### `df.abs(columnName): DataFrame`
+
+Absolute value.
+
+**Example:**
+```javascript
+const df2 = df.abs('temperature');
+// -5 → 5, 10 → 10
+```
+
+### `df.round(columnName, decimals?): DataFrame`
+
+Round to N decimal places.
+
+**Parameters:**
+- `decimals?: number` - Decimal places (default: 0)
+
+**Example:**
+```javascript
+const df2 = df.round('score', 1);
+// 95.567 → 95.6
+```
+
+---
+
+## Aggregations
+
+### `df.sum(columnName): number`
+
+Sum of column values.
+
+**Example:**
+```javascript
+const total = df.sum('sales');
+console.log(total);  // 15000
+```
+
+### `df.mean(columnName): number`
+
+Mean (average) of column values.
+
+**Example:**
+```javascript
+const avgAge = df.mean('age');
+console.log(avgAge);  // 28.5
+```
+
+### `df.min(columnName): number`
+
+Minimum value.
+
+**Example:**
+```javascript
+const minScore = df.min('score');
+console.log(minScore);  // 72.3
+```
+
+### `df.max(columnName): number`
+
+Maximum value.
+
+**Example:**
+```javascript
+const maxScore = df.max('score');
+console.log(maxScore);  // 98.5
+```
+
+### `df.std(columnName): number`
+
+Standard deviation.
+
+**Example:**
+```javascript
+const stdDev = df.std('age');
+console.log(stdDev);  // 5.2
+```
+
+### `df.variance(columnName): number`
+
+Variance.
+
+**Example:**
+```javascript
+const variance = df.variance('score');
+console.log(variance);  // 27.04
+```
+
+---
+
+## Advanced Aggregations
+
+### `df.median(columnName): number`
+
+Median value (50th percentile).
+
+**Example:**
+```javascript
+const medianAge = df.median('age');
+console.log(medianAge);  // 30
+```
+
+### `df.quantile(columnName, q): number`
+
+Quantile (percentile).
+
+**Parameters:**
+- `columnName: string` - Column name
+- `q: number` - Quantile (0.0 to 1.0)
+
+**Example:**
+```javascript
+const q25 = df.quantile('score', 0.25);  // 25th percentile
+const q50 = df.quantile('score', 0.50);  // 50th percentile (median)
+const q75 = df.quantile('score', 0.75);  // 75th percentile
+const q90 = df.quantile('score', 0.90);  // 90th percentile
+```
+
+### `df.valueCounts(columnName): DataFrame`
+
+Frequency distribution.
+
+**Returns:** DataFrame with columns: `{columnName}`, `count`
+
+**Example:**
+```javascript
+const counts = df.valueCounts('grade');
+counts.show();
+//   grade  count
+// 0 A      5
+// 1 B      3
+// 2 C      2
+```
+
+### `df.corrMatrix(columnNames): DataFrame`
+
+Correlation matrix.
+
+**Parameters:**
+- `columnNames: string[]` - Columns to correlate
+
+**Returns:** Correlation matrix DataFrame
+
+**Example:**
+```javascript
+const corr = df.corrMatrix(['math', 'science', 'english']);
+corr.show();
+//          math  science  english
+// math     1.00     0.85     0.72
+// science  0.85     1.00     0.68
+// english  0.72     0.68     1.00
+```
+
+### `df.rank(columnName, method): DataFrame`
+
+Rank values.
+
+**Parameters:**
+- `columnName: string` - Column to rank
+- `method: 'average' | 'min' | 'max' | 'dense' | 'ordinal'` - Ranking method
+
+**Returns:** New DataFrame with column `{columnName}_rank`
+
+**Example:**
+```javascript
+const ranked = df.rank('score', 'average');
+ranked.show();
+//   name     score  score_rank
+// 0 Alice    95     1.0
+// 1 Bob      87     3.0
+// 2 Charlie  95     1.0  (tied, average)
+// 3 Diana    82     4.0
+```
+
+---
+
+## Window Operations
+
+### `df.rollingSum(columnName, windowSize): DataFrame`
+
+Rolling sum.
+
+**Parameters:**
+- `columnName: string` - Column name
+- `windowSize: number` - Window size
+
+**Returns:** New DataFrame with column `{columnName}_rolling_sum`
+
+**Example:**
+```javascript
+const df2 = df.rollingSum('sales', 3);
+// [10, 20, 30, 40] → [null, null, 60, 90]
+```
+
+### `df.rollingMean(columnName, windowSize): DataFrame`
+
+Rolling mean (moving average).
+
+**Example:**
+```javascript
+const sma5 = df.rollingMean('price', 5);  // 5-day SMA
+const sma10 = df.rollingMean('price', 10); // 10-day SMA
+```
+
+### `df.rollingMin(columnName, windowSize): DataFrame`
+
+Rolling minimum.
+
+**Example:**
+```javascript
+const df2 = df.rollingMin('price', 3);
+```
+
+### `df.rollingMax(columnName, windowSize): DataFrame`
+
+Rolling maximum.
+
+**Example:**
+```javascript
+const df2 = df.rollingMax('price', 3);
+```
+
+### `df.rollingStd(columnName, windowSize): DataFrame`
+
+Rolling standard deviation (volatility).
+
+**Example:**
+```javascript
+const volatility = df.rollingStd('price', 20);
+```
+
+### `df.expandingSum(columnName): DataFrame`
+
+Cumulative sum.
+
+**Example:**
+```javascript
+const cumSum = df.expandingSum('sales');
+// [10, 20, 30] → [10, 30, 60]
+```
+
+### `df.expandingMean(columnName): DataFrame`
+
+Cumulative mean.
+
+**Example:**
+```javascript
+const cumMean = df.expandingMean('score');
+// [90, 80, 85] → [90, 85, 85]
+```
+
+---
+
+## Sorting
+
+### `df.sortBy(columnNames, ascending?): DataFrame`
+
+Sort by columns.
+
+**Parameters:**
+- `columnNames: string | string[]` - Column(s) to sort by
+- `ascending?: boolean | boolean[]` - Sort order (default: true)
+
+**Returns:** Sorted DataFrame
+
+**Example:**
+```javascript
+// Sort by single column
+const df2 = df.sortBy('age');               // ascending
+const df3 = df.sortBy('age', false);        // descending
+
+// Sort by multiple columns
+const df4 = df.sortBy(['city', 'age']);     // both ascending
+
+// Mixed sort order
+const df5 = df.sortBy(['city', 'age'], [true, false]);
+// city ascending, age descending
+```
+
+---
+
+## Joins
+
+### `df.join(other, on, how?): DataFrame`
+
+Join DataFrames (inner join).
+
+**Parameters:**
+- `other: DataFrame` - DataFrame to join with
+- `on: string` - Column name to join on
+- `how?: 'inner'` - Join type (default: 'inner')
+
+**Returns:** Joined DataFrame
+
+**Example:**
+```javascript
+const customers = DataFrame.fromCSV(`id,name
+1,Alice
+2,Bob`);
+
+const orders = DataFrame.fromCSV(`id,customer_id,total
+101,1,100
+102,2,200
+103,1,150`);
+
+const joined = orders.join(customers, 'id');
+```
+
+### `df.leftJoin(other, on): DataFrame`
+
+Left outer join.
+
+**Example:**
+```javascript
+const result = df.leftJoin(other, 'id');
+// Keeps all rows from df, matching rows from other
+```
+
+### `df.rightJoin(other, on): DataFrame`
+
+Right outer join.
+
+**Example:**
+```javascript
+const result = df.rightJoin(other, 'id');
+// Keeps all rows from other, matching rows from df
+```
+
+### `df.outerJoin(other, on): DataFrame`
+
+Full outer join.
+
+**Example:**
+```javascript
+const result = df.outerJoin(other, 'id');
+// Keeps all rows from both DataFrames
+```
+
+### `df.crossJoin(other): DataFrame`
+
+Cross join (Cartesian product).
+
+**Example:**
+```javascript
+const result = df.crossJoin(other);
+// Every row from df × every row from other
+```
+
+---
+
+## Grouping
+
+### `df.groupBy(columnName): GroupedDataFrame`
+
+Group by column.
+
+**Returns:** GroupedDataFrame for aggregation
+
+**Example:**
+```javascript
+const grouped = df.groupBy('department');
+
+// Aggregate
+const result = grouped.agg({
+  salary: 'mean',
+  age: 'mean'
+});
+
+result.show();
+//   department  salary_mean  age_mean
+// 0 Engineering    95000     32.5
+// 1 Marketing      82000     29.0
+```
+
+---
+
+## Reshape Operations
+
+### `df.pivot(index, columns, values, aggFunc): DataFrame`
+
+Pivot table (long to wide).
+
+**Parameters:**
+- `index: string` - Row index column
+- `columns: string` - Column to pivot
+- `values: string` - Values to aggregate
+- `aggFunc: 'sum' | 'mean' | 'min' | 'max' | 'count'` - Aggregation function
+
+**Example:**
+```javascript
+const df = DataFrame.fromCSV(`store,product,sales
+A,Widget,100
+A,Gadget,80
+B,Widget,110
+B,Gadget,85`);
+
+const pivoted = df.pivot('store', 'product', 'sales', 'sum');
+pivoted.show();
+//   store  Widget  Gadget
+// 0 A      100     80
+// 1 B      110     85
+```
+
+### `df.melt(idVars, valueVars, varName, valueName): DataFrame`
+
+Unpivot table (wide to long).
+
+**Parameters:**
+- `idVars: string[]` - Columns to keep as identifiers
+- `valueVars: string[]` - Columns to unpivot
+- `varName: string` - Name for variable column
+- `valueName: string` - Name for value column
+
+**Example:**
+```javascript
+const df = DataFrame.fromCSV(`student,math,science
+Alice,95,92
+Bob,78,85`);
+
+const melted = df.melt(['student'], ['math', 'science'], 'subject', 'score');
+melted.show();
+//   student  subject  score
+// 0 Alice    math     95
+// 1 Alice    science  92
+// 2 Bob      math     78
+// 3 Bob      science  85
+```
+
+### `df.transpose(): DataFrame`
+
+Swap rows and columns.
+
+**Example:**
+```javascript
+const df2 = df.transpose();
+// Rows become columns, columns become rows
+```
+
+### `df.stack(): DataFrame`
+
+Stack columns into rows.
+
+**Example:**
+```javascript
+const stacked = df.stack();
+```
+
+### `df.unstack(): DataFrame`
+
+Unstack rows into columns.
+
+**Example:**
+```javascript
+const unstacked = df.unstack();
+```
+
+---
+
+## Apache Arrow
+
+⚠️ **Note**: MVP implementation (v1.3.0) - Schema-only export/import
+
+### `df.toArrow(): ArrowSchema`
+
+Export DataFrame schema to Arrow format.
+
+**Returns:** Arrow schema object (JSON)
+
+**Example:**
+```javascript
+const arrowSchema = df.toArrow();
+console.log(arrowSchema);
+// {
+//   schema: {
+//     fields: [
+//       { name: 'name', type: { name: 'utf8' }, nullable: true },
+//       { name: 'age', type: { name: 'int' }, nullable: false }
+//     ]
+//   }
+// }
+```
+
+### `DataFrame.fromArrow(arrowSchema): DataFrame`
+
+Import DataFrame from Arrow schema.
+
+**Parameters:**
+- `arrowSchema: ArrowSchema` - Arrow schema object
+
+**Returns:** DataFrame
+
+**Example:**
+```javascript
+const schema = {
+  schema: {
+    fields: [
+      { name: 'id', type: { name: 'int' }, nullable: false },
+      { name: 'value', type: { name: 'floatingpoint' }, nullable: false }
+    ]
   }
-}
-```
+};
 
-**Performance**: Zero-copy access - no data copying, just TypedArray view
-
-**Notes**:
-- Returns reference to internal data (modifications affect DataFrame)
-- String columns not yet supported in 1.0.0 (planned for 1.1.0)
-- Boolean columns not yet supported in 1.0.0 (planned for 1.1.0)
-
----
-
-### `df.filter(columnName: string, operator: string, value: number): DataFrame`
-
-Filter DataFrame rows by numeric condition.
-
-**Parameters**:
-- `columnName`: Column to filter on (must be numeric)
-- `operator`: Comparison operator: `'=='`, `'!='`, `'>'`, `'<'`, `'>='`, `'<='`
-- `value`: Value to compare against
-
-**Returns**: New filtered DataFrame
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Filter: age >= 30
-const adults = df.filter('age', '>=', 30);
-console.log(`${adults.shape.rows} adults`);
-adults.free();
-
-// Filter: salary > 100000
-const highEarners = df.filter('salary', '>', 100000);
-console.log(`${highEarners.shape.rows} high earners`);
-highEarners.free();
-
-// Filter: years_experience == 5
-const fiveYears = df.filter('years_experience', '==', 5);
-fiveYears.free();
-```
-
-**Notes**:
-- Only works on numeric columns (Int32, Int64, Float64)
-- String column filtering not supported in 1.0.0 (planned for 1.1.0)
-- Returns new DataFrame - remember to call `.free()` when done
-
----
-
-### `df.select(columnNames: string[]): DataFrame`
-
-Select specific columns from DataFrame.
-
-**Parameters**:
-- `columnNames`: Array of column names to select
-
-**Returns**: New DataFrame with selected columns only
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Select specific columns
-const subset = df.select(['name', 'age', 'salary']);
-console.log(subset.columns); // ['name', 'age', 'salary']
-subset.free();
-
-// Select numeric columns only
-const numeric = df.select(['age', 'salary', 'years_experience']);
-numeric.free();
-```
-
-**Notes**:
-- Column order in result matches order in `columnNames` array
-- Non-existent columns are ignored
-- Returns new DataFrame - remember to call `.free()` when done
-
----
-
-### `df.head(n: number): DataFrame`
-
-Get first n rows of DataFrame.
-
-**Parameters**:
-- `n`: Number of rows to return
-
-**Returns**: New DataFrame with first n rows
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Get first 10 rows
-const top10 = df.head(10);
-console.log(`First ${top10.shape.rows} rows`);
-top10.free();
-
-// Get first 5 rows
-const preview = df.head(5);
-preview.free();
-```
-
-**Notes**:
-- If `n` is greater than row count, returns all rows
-- Returns new DataFrame - remember to call `.free()` when done
-
----
-
-### `df.tail(n: number): DataFrame`
-
-Get last n rows of DataFrame.
-
-**Parameters**:
-- `n`: Number of rows to return
-
-**Returns**: New DataFrame with last n rows
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Get last 10 rows
-const bottom10 = df.tail(10);
-console.log(`Last ${bottom10.shape.rows} rows`);
-bottom10.free();
-
-// Get last 5 rows
-const recent = df.tail(5);
-recent.free();
-```
-
-**Notes**:
-- If `n` is greater than row count, returns all rows
-- Returns new DataFrame - remember to call `.free()` when done
-
----
-
-### `df.sort(columnName: string, descending?: boolean): DataFrame`
-
-Sort DataFrame by column.
-
-**Parameters**:
-- `columnName`: Column to sort by (must be numeric in 1.0.0)
-- `descending`: Sort in descending order (default: `false` for ascending)
-
-**Returns**: New sorted DataFrame
-
-**Example**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-
-// Sort by age (ascending)
-const byAge = df.sort('age');
-const ages = byAge.column('age');
-console.log(Array.from(ages)); // [25, 28, 30, 35, 40, ...]
-byAge.free();
-
-// Sort by salary (descending)
-const bySalary = df.sort('salary', true);
-const salaries = bySalary.column('salary');
-console.log(Array.from(salaries)); // [125000, 115000, 110000, ...]
-bySalary.free();
-```
-
-**Notes**:
-- Only works on numeric columns in 1.0.0 (Int32, Int64, Float64)
-- String column sorting planned for 1.1.0
-- Returns new DataFrame - remember to call `.free()` when done
-- Stable sort (preserves relative order of equal elements)
-
----
-
-### `df.free(): void`
-
-Release DataFrame memory.
-
-**By default** (autoCleanup: true): Memory is freed automatically when the DataFrame is garbage collected. Calling `free()` is **optional** but **recommended** for immediate cleanup.
-
-**Manual mode** (autoCleanup: false): You **must** call `free()` when done to prevent memory leaks.
-
-**Example (default - auto cleanup)**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-// ... use df
-// Memory freed automatically on GC
-// Can still call df.free() for immediate cleanup (recommended)
-df.free(); // Optional but recommended
-```
-
-**Example (manual mode - production)**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText, { autoCleanup: false });
-try {
-  // Use df
-  const ages = df.column('age');
-  console.log(ages);
-} finally {
-  df.free(); // MUST call - always runs, even if error
-}
-```
-
-**Why call free() even with auto cleanup?**
-- Immediate memory release (no waiting for GC)
-- ~3× faster in tight loops
-- Predictable performance
-
----
-
-## CSV Options
-
-Configure CSV parsing behavior:
-
-```typescript
-interface CSVOptions {
-  delimiter?: string;           // Field delimiter (default: ',')
-  has_headers?: boolean;        // First row contains headers (default: true)
-  skip_blank_lines?: boolean;   // Skip blank lines (default: true)
-  trim_whitespace?: boolean;    // Trim whitespace from fields (default: false)
-  autoCleanup?: boolean;        // Automatically free memory on GC (default: true)
-}
-```
-
-### Examples
-
-**Tab-separated values (TSV)**:
-
-```javascript
-const tsv = "name\tage\tscorer\nAlice\t30\t95.5";
-const df = rozes.DataFrame.fromCSV(tsv, { delimiter: '\t' });
-```
-
-**No headers**:
-
-```javascript
-const noHeaders = "30,95.5\n25,87.3";
-const df = rozes.DataFrame.fromCSV(noHeaders, { has_headers: false });
-console.log(df.columns); // ['column_0', 'column_1']
-```
-
-**Trim whitespace**:
-
-```javascript
-const csv = "name, age, score\nAlice , 30 , 95.5";
-const df = rozes.DataFrame.fromCSV(csv, { trim_whitespace: true });
-// Fields trimmed: "Alice ", " 30 " → "Alice", "30"
-```
-
-**Custom delimiter**:
-
-```javascript
-const pipeSeparated = "name|age|score\nAlice|30|95.5";
-const df = rozes.DataFrame.fromCSV(pipeSeparated, { delimiter: '|' });
+const df = DataFrame.fromArrow(schema);
 ```
 
 ---
 
-## TypeScript Types
+## Lazy Evaluation
 
-Full TypeScript support with autocomplete:
+⚠️ **Note**: MVP implementation (v1.3.0) - select() and limit() only
 
-### Rozes Class
+### `df.lazy(): LazyDataFrame`
 
-```typescript
-class Rozes {
-  static init(wasmPath?: string): Promise<Rozes>;
-  readonly DataFrame: typeof DataFrame;
-  readonly version: string;
-}
-```
+Create lazy DataFrame for query optimization.
 
-### DataFrame Class
+**Returns:** LazyDataFrame
 
-```typescript
-class DataFrame {
-  static fromCSV(csvText: string, options?: CSVOptions): DataFrame;
-  static fromCSVFile(filePath: string, options?: CSVOptions): DataFrame;
-
-  readonly shape: DataFrameShape;
-  readonly columns: string[];
-  readonly length: number;
-
-  column(name: string): Float64Array | Int32Array | BigInt64Array | null;
-
-  // DataFrame operations (1.0.0)
-  filter(columnName: string, operator: '==' | '!=' | '>' | '<' | '>=' | '<=', value: number): DataFrame;
-  select(columnNames: string[]): DataFrame;
-  head(n: number): DataFrame;
-  tail(n: number): DataFrame;
-  sort(columnName: string, descending?: boolean): DataFrame;
-
-  free(): void;
-}
-```
-
-### Interfaces
-
-```typescript
-interface CSVOptions {
-  delimiter?: string;
-  has_headers?: boolean;
-  skip_blank_lines?: boolean;
-  trim_whitespace?: boolean;
-}
-
-interface DataFrameShape {
-  rows: number;
-  cols: number;
-}
-```
-
-### Error Types
-
-```typescript
-enum ErrorCode {
-  Success = 0,
-  OutOfMemory = -1,
-  InvalidFormat = -2,
-  InvalidHandle = -3,
-  ColumnNotFound = -4,
-  TypeMismatch = -5,
-  IndexOutOfBounds = -6,
-  TooManyDataFrames = -7,
-  InvalidOptions = -8,
-}
-
-class RozesError extends Error {
-  readonly code: ErrorCode;
-}
-```
-
----
-
-## Error Handling
-
-All operations can throw `RozesError`:
-
+**Example:**
 ```javascript
-const { Rozes, RozesError, ErrorCode } = require('rozes');
-
-try {
-  const rozes = await Rozes.init();
-  const df = rozes.DataFrame.fromCSV(malformedCSV);
-  df.free();
-} catch (err) {
-  if (err instanceof RozesError) {
-    console.error(`Rozes error ${err.code}: ${err.message}`);
-
-    switch (err.code) {
-      case ErrorCode.InvalidFormat:
-        console.error('CSV format is invalid');
-        break;
-      case ErrorCode.OutOfMemory:
-        console.error('Out of memory');
-        break;
-      default:
-        console.error('Unknown error');
-    }
-  } else {
-    console.error('Unexpected error:', err);
-  }
-}
+const lazyDf = df.lazy();
 ```
 
-**Common Errors**:
-- `InvalidFormat` (-2): Malformed CSV
-- `OutOfMemory` (-1): Allocation failed
-- `ColumnNotFound` (-4): Column name doesn't exist
-- `TypeMismatch` (-5): Incompatible types
+### `lazyDf.select(columnNames): LazyDataFrame`
+
+Add column selection to query plan.
+
+**Parameters:**
+- `columnNames: string[]` - Columns to select
+
+**Returns:** LazyDataFrame
+
+**Example:**
+```javascript
+const lazy = df.lazy().select(['name', 'age']);
+```
+
+### `lazyDf.limit(n): LazyDataFrame`
+
+Add row limit to query plan.
+
+**Parameters:**
+- `n: number` - Number of rows
+
+**Returns:** LazyDataFrame
+
+**Example:**
+```javascript
+const lazy = df.lazy().limit(100);
+```
+
+### `lazyDf.collect(): DataFrame`
+
+Execute optimized query plan.
+
+**Returns:** DataFrame with results
+
+**Example:**
+```javascript
+const result = df.lazy()
+  .select(['name', 'age'])
+  .limit(10)
+  .collect();  // Execute now!
+
+result.show();
+```
 
 ---
 
 ## Memory Management
 
-### Automatic vs Manual Cleanup
+### `df.free(): void`
 
-**Default (autoCleanup: true)**: Memory is freed automatically when DataFrame is garbage collected. No need to call `df.free()`, but it's still recommended for immediate cleanup.
+Free DataFrame memory (C ABI required).
 
-**Manual Mode (autoCleanup: false)**: You must explicitly call `df.free()` to release WASM memory.
+**Important**: Always call `free()` when done with a DataFrame to prevent memory leaks.
 
-### Best Practices
-
-**1. Default mode - optional free (recommended for most cases)**:
-
+**Example:**
 ```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-// Use df
-const result = processData(df);
-df.free(); // Optional but recommended for immediate cleanup
-```
+const df = DataFrame.fromCSV(csv);
 
-**2. Manual mode - required free (production/performance-critical)**:
+// Use DataFrame
+df.show();
 
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText, { autoCleanup: false });
-try {
-  // Use df
-  const result = processData(df);
-  return result;
-} finally {
-  df.free(); // MUST call - always runs
-}
-```
-
-**2. Free DataFrames in reverse order**:
-
-```javascript
-const df1 = rozes.DataFrame.fromCSV(csv1);
-const df2 = rozes.DataFrame.fromCSV(csv2);
-
-try {
-  // Use df1, df2
-} finally {
-  df2.free(); // Free in reverse order
-  df1.free();
-}
-```
-
-**3. Extract data before freeing**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
-const ages = df.column('age');
-
-// Copy if you need to keep data after free
-const agesCopy = new Float64Array(ages);
-
-df.free(); // Safe - agesCopy is independent
-
-console.log(agesCopy); // Still works
-```
-
-**4. Don't use after free**:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
+// Free memory
 df.free();
+```
 
-// ❌ BAD - df is invalid after free
-console.log(df.shape); // May crash or return garbage
+**Pattern**: Use try/finally for cleanup
+
+```javascript
+let df;
+try {
+  df = DataFrame.fromCSV(csv);
+
+  // Use DataFrame
+  const result = df.filter(row => row.get('age') > 30);
+  result.show();
+
+  // Free intermediate results
+  result.free();
+} finally {
+  // Always free, even if error
+  if (df) df.free();
+}
+```
+
+---
+
+## TypeScript Support
+
+All operations have full TypeScript definitions with JSDoc examples.
+
+```typescript
+import { Rozes, DataFrame, RowRef } from 'rozes';
+
+const rozes = await Rozes.init();
+const DataFrame = rozes.DataFrame;
+
+const df: DataFrame = DataFrame.fromCSV(csvString);
+
+// Filter with type safety
+const filtered: DataFrame = df.filter((row: RowRef) => {
+  const age = row.get('age');
+  return typeof age === 'number' && age > 30;
+});
+
+// Cleanup
+filtered.free();
+df.free();
 ```
 
 ---
 
 ## Performance Tips
 
-### 1. Zero-Copy Access
+1. **Lazy evaluation**: Use for chained operations on large datasets
+   ```javascript
+   // Eager (slower)
+   const result = df.select(['a', 'b']).head(10);
 
-Use `column()` for maximum performance:
+   // Lazy (faster)
+   const result = df.lazy().select(['a', 'b']).limit(10).collect();
+   ```
 
-```javascript
-const df = rozes.DataFrame.fromCSV(csvText);
+2. **Projection pushdown**: Select columns early
+   ```javascript
+   // Bad: Load all columns, then select
+   const result = df.filter(pred).select(['a', 'b']);
 
-// ✅ FAST - Zero-copy TypedArray access
-const ages = df.column('age'); // Direct memory view
-const sum = ages.reduce((a, b) => a + b, 0);
+   // Good: Select first (fewer columns to filter)
+   const result = df.select(['a', 'b']).filter(pred);
+   ```
 
-// ❌ SLOW - Would require serialization
-// (Not available in 1.0.0 anyway)
-```
+3. **Batch operations**: Process in chunks for large datasets
+   ```javascript
+   const chunkSize = 10000;
+   for (let i = 0; i < df.shape.rows; i += chunkSize) {
+     const chunk = df.slice(i, i + chunkSize);
+     // Process chunk
+     chunk.free();
+   }
+   ```
 
-### 2. Batch Operations
+4. **Memory management**: Free intermediate results
+   ```javascript
+   const df1 = df.filter(pred1);
+   const df2 = df1.filter(pred2);
+   df1.free();  // Free intermediate result
 
-Process data in bulk:
-
-```javascript
-const df = rozes.DataFrame.fromCSV(largeCSV);
-
-// ✅ FAST - Single TypedArray access
-const prices = df.column('price');
-const quantities = df.column('quantity');
-
-let total = 0;
-for (let i = 0; i < prices.length; i++) {
-  total += prices[i] * Number(quantities[i]);
-}
-
-df.free();
-```
-
-### 3. Reuse Rozes Instance
-
-Initialize once, use many times:
-
-```javascript
-// ✅ GOOD - Initialize once
-const rozes = await Rozes.init();
-
-function processFile(path) {
-  const df = rozes.DataFrame.fromCSVFile(path);
-  // ... process
-  df.free();
-}
-
-// ❌ BAD - Re-initializing is wasteful
-async function processFile(path) {
-  const rozes = await Rozes.init(); // Loads WASM every time
-  // ...
-}
-```
-
-### 4. Large Files
-
-For large files, consider chunking (stream API coming in 1.1.0):
-
-```javascript
-// Current: Load entire file at once
-const df = rozes.DataFrame.fromCSVFile('large.csv'); // ~570ms for 1M rows
-
-// Future (1.1.0): Stream processing
-// const stream = rozes.DataFrame.fromCSVStream('large.csv', { chunkSize: 10000 });
-```
+   // Use df2
+   df2.free();
+   ```
 
 ---
 
-## Complete Examples
-
-### Basic Usage
+## Error Handling
 
 ```javascript
-const { Rozes } = require('rozes');
+try {
+  const df = DataFrame.fromCSV(csvString);
 
-async function main() {
-  const rozes = await Rozes.init();
-
-  const csv = `name,age,score
-Alice,30,95.5
-Bob,25,87.3
-Charlie,35,91.0`;
-
-  const df = rozes.DataFrame.fromCSV(csv);
-
-  console.log(df.shape); // { rows: 3, cols: 3 }
-  console.log(df.columns); // ['name', 'age', 'score']
-
-  const ages = df.column('age');
-  console.log(Array.from(ages)); // [30, 25, 35]
-
-  df.free();
-}
-
-main();
-```
-
-### DataFrame Operations & Chaining
-
-```javascript
-const { Rozes } = require('rozes');
-
-async function main() {
-  const rozes = await Rozes.init();
-
-  const csv = `name,age,department,salary,years_experience
-Alice,30,Engineering,95000,5
-Bob,25,Sales,67000,2
-Charlie,35,Engineering,110000,10
-Diana,28,Marketing,72000,4
-Eve,45,Engineering,125000,18
-Frank,32,Sales,78000,7`;
-
-  const df = rozes.DataFrame.fromCSV(csv);
-
-  // Example 1: Filter operation
-  const adults = df.filter('age', '>=', 30);
-  console.log(`${adults.shape.rows} employees age >= 30`);
-  adults.free();
-
-  // Example 2: Select specific columns
-  const subset = df.select(['age', 'salary', 'years_experience']);
-  console.log(`Selected ${subset.shape.cols} columns`);
-  subset.free();
-
-  // Example 3: Sort by salary (descending)
-  const bySalary = df.sort('salary', true);
-  const topSalary = bySalary.column('salary');
-  console.log(`Top salary: $${topSalary[0]}`);
-  bySalary.free();
-
-  // Example 4: Head and tail
-  const top3 = df.head(3);
-  const bottom3 = df.tail(3);
-  console.log(`First 3 rows: ${top3.shape.rows}`);
-  console.log(`Last 3 rows: ${bottom3.shape.rows}`);
-  top3.free();
-  bottom3.free();
-
-  // Example 5: Operation chaining
-  // Goal: Find top 3 highest-paid employees over 30
-  const over30 = df.filter('age', '>', 30);
-  const highEarners = over30.filter('salary', '>', 70000);
-  const sorted = highEarners.sort('salary', true);
-  const top3HighEarners = sorted.head(3);
-
-  const salaries = top3HighEarners.column('salary');
-  const ages = top3HighEarners.column('age');
-  console.log('\nTop 3 highest-paid employees over 30:');
-  for (let i = 0; i < salaries.length; i++) {
-    console.log(`  ${i + 1}. Age ${ages[i]}, $${salaries[i].toLocaleString()}/year`);
-  }
-
-  // Clean up (in reverse order)
-  top3HighEarners.free();
-  sorted.free();
-  highEarners.free();
-  over30.free();
-  df.free();
-}
-
-main();
-```
-
-### File I/O
-
-```javascript
-const { Rozes } = require('rozes');
-const fs = require('fs');
-
-async function main() {
-  const rozes = await Rozes.init();
-
-  // Load from file
-  const df = rozes.DataFrame.fromCSVFile('data.csv');
-
-  // Access data
-  const prices = df.column('price');
-  const quantities = df.column('quantity');
-
-  // Calculate total value
-  let totalValue = 0;
-  for (let i = 0; i < prices.length; i++) {
-    totalValue += prices[i] * Number(quantities[i]);
-  }
-
-  console.log(`Total: $${totalValue.toFixed(2)}`);
-
-  df.free();
-}
-
-main();
-```
-
-### Error Handling
-
-```javascript
-const { Rozes, RozesError, ErrorCode } = require('rozes');
-
-async function safeParseCSV(csvText) {
-  const rozes = await Rozes.init();
-
-  try {
-    const df = rozes.DataFrame.fromCSV(csvText);
-
-    // Process data
-    const result = {
-      rows: df.shape.rows,
-      cols: df.shape.cols,
-      columns: df.columns
-    };
-
-    df.free();
-    return { success: true, data: result };
-
-  } catch (err) {
-    if (err instanceof RozesError) {
-      return {
-        success: false,
-        error: {
-          code: err.code,
-          message: err.message
-        }
-      };
+  // Operations that might fail
+  const result = df.filter(row => {
+    const age = row.get('age');
+    if (typeof age !== 'number') {
+      throw new Error('Invalid age type');
     }
-    throw err; // Re-throw unexpected errors
-  }
-}
-```
+    return age > 30;
+  });
 
-### TypeScript
+  result.show();
+  result.free();
+  df.free();
 
-```typescript
-import { Rozes, DataFrame, CSVOptions, DataFrameShape } from 'rozes';
-
-async function analyzeCSV(filePath: string): Promise<DataFrameShape> {
-  const rozes: Rozes = await Rozes.init();
-
-  const options: CSVOptions = {
-    delimiter: ',',
-    has_headers: true,
-    trim_whitespace: true
-  };
-
-  const df: DataFrame = rozes.DataFrame.fromCSVFile(filePath, options);
-
-  try {
-    const shape: DataFrameShape = df.shape;
-
-    // TypeScript knows column() can return null
-    const ages = df.column('age');
-    if (ages) {
-      const avgAge = ages.reduce((a, b) => a + b) / ages.length;
-      console.log(`Average age: ${avgAge}`);
-    }
-
-    return shape;
-  } finally {
-    df.free();
-  }
+} catch (err) {
+  console.error('DataFrame error:', err.message);
 }
 ```
 
 ---
 
-## Known Limitations (1.0.0)
+## See Also
 
-**Features Deferred to 1.1.0**:
-- CSV export (`toCSV()`, `toCSVFile()`) - WASM export not yet implemented
-- String column access - only numeric columns via `column()`
-- Boolean column access - only numeric columns via `column()`
-- String/Boolean column filtering/sorting - only numeric operations supported
-- GroupBy and Join operations - planned for 1.1.0
-- Stream API for large files (>1GB)
-
-**Currently Available (1.0.0)**:
-- ✅ Numeric filtering (`filter()` with ==, !=, >, <, >=, <=)
-- ✅ Column selection (`select()`)
-- ✅ Sorting by numeric columns (`sort()`)
-- ✅ Head and tail operations (`head()`, `tail()`)
-- ✅ Operation chaining (combine multiple operations)
-
-**Workarounds**:
-- For string data: Use Zig API (see [ZIG_API.md](./ZIG_API.md))
-- For CSV export: Manually reconstruct from column data
-- For GroupBy/Join: Wait for 1.1.0 or use Zig API
+- [README.md](../README.md) - Quick start guide
+- [examples/js/](../examples/js/) - API showcase examples
+- [examples/nodejs/](../examples/nodejs/) - Real-world examples
+- [CHANGELOG.md](./CHANGELOG.md) - Version history
 
 ---
 
-## Next Steps
-
-- **Migration Guide**: See [MIGRATION.md](./MIGRATION.md) for migrating from Papa Parse, csv-parse, Danfo.js
-- **Zig API**: See [ZIG_API.md](./ZIG_API.md) for full DataFrame operations
-- **Performance**: See [BENCHMARK_BASELINE_REPORT.md](./BENCHMARK_BASELINE_REPORT.md) for detailed benchmarks
-- **Examples**: Browse `examples/node/` directory
-
----
-
-**Version**: 1.0.0
-**Last Updated**: 2025-10-31
-**License**: MIT
+**Last Updated**: 2025-11-08 | **Version**: 1.3.0

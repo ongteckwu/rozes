@@ -1,0 +1,61 @@
+# Git Attributes for Rozes
+
+# Line endings - normalize to LF
+* text=auto eol=lf
+
+# TypeScript and JavaScript - PRIMARY LANGUAGE (Node.js library)
+*.ts linguist-language=TypeScript linguist-detectable=true
+*.d.ts linguist-language=TypeScript linguist-detectable=true
+*.mjs linguist-language=JavaScript linguist-detectable=true
+*.cjs linguist-language=JavaScript linguist-detectable=true
+*.js linguist-language=JavaScript linguist-detectable=true
+
+# Zig implementation (mark as vendored to exclude from language stats)
+# This positions the repo as a TypeScript/Node.js library (implemented in Zig)
+src/**/*.zig linguist-vendored=true
+*.zig linguist-vendored=true
+
+# Configuration files
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Mark generated/build artifacts as generated (excluded from language stats)
+dist/** linguist-generated=true
+zig-cache/** linguist-generated=true
+zig-out/** linguist-generated=true
+node_modules/** linguist-vendored=true
+
+# Mark test data as vendored (excluded from language stats)
+testdata/** linguist-vendored=true
+testdata/**/*.csv linguist-vendored=true
+
+# Mark documentation (excluded from language stats)
+*.md linguist-documentation=true
+docs/** linguist-documentation=true
+
+# Keep examples visible (showcase TypeScript/JavaScript usage)
+examples/**/*.js linguist-detectable=true
+examples/**/*.ts linguist-detectable=true
+examples/**/*.mjs linguist-detectable=true
+
+# Binary files
+*.wasm binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.node binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+
+# Diff behavior
+*.wasm diff=hex
+*.lock -diff
+package-lock.json -diff

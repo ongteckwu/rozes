@@ -7,6 +7,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const rozes = @import("rozes.zig");
 const DataFrame = rozes.DataFrame;
+const Series = rozes.Series;
+const ColumnDesc = rozes.ColumnDesc;
 const CSVParser = rozes.CSVParser;
 const CSVOptions = rozes.CSVOptions;
 const ValueType = rozes.ValueType;
@@ -21,6 +23,10 @@ const LazyDataFrame = query_plan.LazyDataFrame;
 const enable_logging = builtin.mode == .Debug;
 
 fn logError(comptime fmt: []const u8, args: anytype) void {
+    // Tiger Style: Assertions
+    std.debug.assert(fmt.len > 0); // Format string must not be empty
+    std.debug.assert(@intFromPtr(&enable_logging) != 0); // Logging flag exists
+
     if (enable_logging) {
         std.log.err(fmt, args);
     }
@@ -32,6 +38,9 @@ fn logError(comptime fmt: []const u8, args: anytype) void {
 
 const MAX_DATAFRAMES: u32 = 1000; // Maximum concurrent DataFrames
 const INVALID_HANDLE: i32 = -1;
+const MAX_ROWS: u32 = std.math.maxInt(u32); // Maximum rows per DataFrame
+const MAX_COLUMNS: u32 = 10_000; // Maximum columns per DataFrame
+const Allocator = std.mem.Allocator;
 
 // String interning: Deduplicate error messages (saves ~1-2 KB)
 const ErrorStrings = struct {
@@ -178,6 +187,10 @@ var registry: DataFrameRegistry = undefined;
 var registry_initialized = false;
 
 fn ensureRegistryInitialized() void {
+    // Tiger Style: Assertions
+    std.debug.assert(@intFromPtr(&registry) != 0); // Registry pointer valid
+    std.debug.assert(@intFromPtr(&gpa) != 0); // GPA pointer valid
+
     if (!registry_initialized) {
         registry = DataFrameRegistry.init(gpa.allocator()) catch blk: {
             // If init fails, use a simpler fallback (shouldn't happen in practice)
@@ -193,8 +206,15 @@ fn ensureRegistryInitialized() void {
 }
 
 fn getAllocator() std.mem.Allocator {
+    // Tiger Style: Assertions
     std.debug.assert(registry_initialized); // Must call ensureRegistryInitialized first
-    return gpa.allocator();
+    std.debug.assert(@intFromPtr(&gpa) != 0); // GPA pointer valid
+
+    const allocator = gpa.allocator();
+
+    // Post-condition: Valid allocator returned
+    std.debug.assert(@intFromPtr(&allocator) != 0);
+    return allocator;
 }
 
 // ============================================================================
@@ -264,6 +284,37 @@ fn parseJSONStringArray(
     std.debug.assert(iterations <= MAX_PARSE_ITERATIONS);
 
     return result;
+}
+
+/// Register a DataFrame and return its handle
+/// Reduces 30-line boilerplate to single function call
+///
+/// Tiger Style:
+/// - 2+ assertions (validation)
+/// - Proper error handling with cleanup
+/// - Post-condition verification
+fn registerDataFrameResult(allocator: std.mem.Allocator, df_param: DataFrame) !i32 {
+    // Tiger Style: Pre-condition assertions
+    std.debug.assert(df_param.row_count >= 0);
+    std.debug.assert(df_param.columns.len > 0);
+
+    const df_ptr = allocator.create(DataFrame) catch {
+        // Need a mutable copy to call deinit()
+        var df_mut = df_param;
+        df_mut.deinit();
+        return error.OutOfMemory;
+    };
+    df_ptr.* = df_param;
+
+    const handle = registry.register(df_ptr) catch {
+        df_ptr.deinit();
+        allocator.destroy(df_ptr);
+        return error.TooManyDataFrames;
+    };
+
+    // Tiger Style: Post-condition assertion
+    std.debug.assert(handle >= 0);
+    return handle;
 }
 
 // ============================================================================
@@ -340,7 +391,10 @@ export fn rozes_getDimensions(
     out_rows: *u32,
     out_cols: *u32,
 ) i32 {
+    // Tiger Style: Assertions
     std.debug.assert(handle >= 0);
+    std.debug.assert(@intFromPtr(out_rows) != 0); // Non-null output pointer
+    std.debug.assert(@intFromPtr(out_cols) != 0); // Non-null output pointer
 
     const df = registry.get(handle) orelse {
         return @intFromEnum(ErrorCode.InvalidHandle);
@@ -348,6 +402,10 @@ export fn rozes_getDimensions(
 
     out_rows.* = df.row_count;
     out_cols.* = @intCast(df.columns.len);
+
+    // Post-condition: Output values set
+    std.debug.assert(out_rows.* == df.row_count);
+    std.debug.assert(out_cols.* == df.columns.len);
 
     return @intFromEnum(ErrorCode.Success);
 }
@@ -474,7 +532,9 @@ export fn rozes_getColumnNames(
 
 /// Free DataFrame and release memory
 export fn rozes_free(handle: i32) void {
+    // Tiger Style: Assertions
     std.debug.assert(handle >= 0);
+    std.debug.assert(handle < MAX_DATAFRAMES); // Reasonable handle range
 
     const df = registry.get(handle) orelse return;
 
@@ -484,6 +544,9 @@ export fn rozes_free(handle: i32) void {
     allocator.destroy(df);
 
     registry.unregister(handle);
+
+    // Post-condition: DataFrame removed from registry
+    std.debug.assert(registry.get(handle) == null);
 }
 
 /// Allocate memory buffer for JavaScript
@@ -933,6 +996,67 @@ export fn rozes_dropDuplicates(
 
 /// Get summary statistics for all columns
 /// Returns JSON object: {"col1": {"count": 100, "mean": 50, ...}, ...}
+/// Helper: Convert summary statistics HashMap to JSON string
+fn summaryStatsToJSON(allocator: Allocator, summary_map: anytype) ![]u8 {
+    std.debug.assert(summary_map.count() >= 0);
+    std.debug.assert(summary_map.count() <= MAX_COLUMNS);
+
+    var json = std.ArrayList(u8).initCapacity(allocator, 512) catch {
+        return error.OutOfMemory;
+    };
+    errdefer json.deinit(allocator);
+
+    try json.append(allocator, '{');
+
+    var it = summary_map.iterator();
+    var first = true;
+    const MAX_ITERATIONS: u32 = MAX_COLUMNS;
+    var iterations: u32 = 0;
+
+    while (it.next()) |entry| {
+        if (iterations >= MAX_ITERATIONS) break;
+        iterations += 1;
+
+        if (!first) {
+            try json.append(allocator, ',');
+        }
+        first = false;
+
+        // Column name
+        try json.append(allocator, '"');
+        try json.appendSlice(allocator, entry.key_ptr.*);
+        try json.appendSlice(allocator, "\":{");
+
+        // Summary stats
+        const summary = entry.value_ptr.*;
+
+        // Count is always present (not optional)
+        try json.writer(allocator).print("\"count\":{},", .{summary.count});
+
+        // Mean, std, min, max are optional
+        if (summary.mean) |mean| {
+            try json.writer(allocator).print("\"mean\":{d},", .{mean});
+        }
+        if (summary.std) |std_val| {
+            try json.writer(allocator).print("\"std\":{d},", .{std_val});
+        }
+        if (summary.min) |min| {
+            try json.writer(allocator).print("\"min\":{d},", .{min});
+        }
+        if (summary.max) |max| {
+            try json.writer(allocator).print("\"max\":{d}", .{max});
+        }
+
+        try json.append(allocator, '}');
+    }
+
+    std.debug.assert(iterations <= MAX_ITERATIONS);
+
+    try json.append(allocator, '}');
+
+    return try json.toOwnedSlice(allocator);
+}
+
 export fn rozes_describe(
     handle: i32,
     out_ptr: *u32,
@@ -959,88 +1083,18 @@ export fn rozes_describe(
         summary_map.deinit();
     }
 
-    // Convert to JSON
-    var json = std.ArrayList(u8).initCapacity(allocator, 512) catch {
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    defer json.deinit(allocator);
-
-    json.append(allocator, '{') catch {
+    // Convert to JSON using helper
+    const json_str = summaryStatsToJSON(allocator, summary_map) catch {
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
 
-    var it = summary_map.iterator();
-    var first = true;
-    while (it.next()) |entry| {
-        if (!first) {
-            json.append(allocator, ',') catch {
-                return @intFromEnum(ErrorCode.OutOfMemory);
-            };
-        }
-        first = false;
-
-        // Column name
-        json.append(allocator, '"') catch {
-            return @intFromEnum(ErrorCode.OutOfMemory);
-        };
-        json.appendSlice(allocator, entry.key_ptr.*) catch {
-            return @intFromEnum(ErrorCode.OutOfMemory);
-        };
-        json.appendSlice(allocator, "\":{") catch {
-            return @intFromEnum(ErrorCode.OutOfMemory);
-        };
-
-        // Summary stats
-        const summary = entry.value_ptr.*;
-
-        // Count is always present (not optional)
-        json.writer(allocator).print("\"count\":{},", .{summary.count}) catch {
-            return @intFromEnum(ErrorCode.OutOfMemory);
-        };
-
-        // Mean, std, min, max are optional
-        if (summary.mean) |mean| {
-            json.writer(allocator).print("\"mean\":{d},", .{mean}) catch {
-                return @intFromEnum(ErrorCode.OutOfMemory);
-            };
-        }
-        if (summary.std) |std_val| {
-            json.writer(allocator).print("\"std\":{d},", .{std_val}) catch {
-                return @intFromEnum(ErrorCode.OutOfMemory);
-            };
-        }
-        if (summary.min) |min| {
-            json.writer(allocator).print("\"min\":{d},", .{min}) catch {
-                return @intFromEnum(ErrorCode.OutOfMemory);
-            };
-        }
-        if (summary.max) |max| {
-            json.writer(allocator).print("\"max\":{d}", .{max}) catch {
-                return @intFromEnum(ErrorCode.OutOfMemory);
-            };
-        }
-
-        json.append(allocator, '}') catch {
-            return @intFromEnum(ErrorCode.OutOfMemory);
-        };
-    }
-
-    json.append(allocator, '}') catch {
+    const result_ptr = allocator.alloc(u8, json_str.len) catch {
+        allocator.free(json_str);
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
 
-    // Allocate buffer for result
-    const result = json.toOwnedSlice(allocator) catch {
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-
-    const result_ptr = allocator.alloc(u8, result.len) catch {
-        allocator.free(result);
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-
-    @memcpy(result_ptr, result);
-    allocator.free(result);
+    @memcpy(result_ptr, json_str);
+    allocator.free(json_str);
 
     out_ptr.* = @intCast(@intFromPtr(result_ptr.ptr));
     out_len.* = @intCast(result_ptr.len);
@@ -1206,49 +1260,26 @@ export fn rozes_sort(
     return new_handle;
 }
 
-/// Filter DataFrame by simple numeric comparison
-/// operator: 0 = equal, 1 = not equal, 2 = greater than, 3 = less than, 4 = greater or equal, 5 = less or equal
-/// Returns handle to new filtered DataFrame
-export fn rozes_filterNumeric(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
+/// Helper: Count rows matching numeric filter condition
+fn countMatchingRows(
+    df: *const DataFrame,
+    col_name: []const u8,
     operator: u8,
     value: f64,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
+) u32 {
     std.debug.assert(operator <= 5);
+    std.debug.assert(df.row_count <= MAX_ROWS);
 
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
+    const series = df.column(col_name) orelse return 0;
+    const MAX_ITER: u32 = df.row_count;
 
-    const col_name = col_name_ptr[0..col_name_len];
-    const allocator = getAllocator();
-
-    // Get column to filter on
-    const series = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    // Verify it's numeric
-    if (series.value_type != .Float64 and series.value_type != .Int64) {
-        return @intFromEnum(ErrorCode.TypeMismatch);
-    }
-
-    // Implement filter inline (can't use closures in Zig export functions)
-    // First pass: count matching rows
-    var match_count: u32 = 0;
-    var row_idx: u32 = 0;
-
-    const MAX_ROWS: u32 = df.row_count;
-
-    // Get column data once
     const float_data = if (series.value_type == .Float64) series.asFloat64() else null;
     const int_data = if (series.value_type == .Int64) series.asInt64() else null;
 
-    while (row_idx < MAX_ROWS) : (row_idx += 1) {
+    var match_count: u32 = 0;
+    var row_idx: u32 = 0;
+
+    while (row_idx < MAX_ITER) : (row_idx += 1) {
         const row_val: f64 = if (float_data) |fdata|
             fdata[row_idx]
         else if (int_data) |idata|
@@ -1257,36 +1288,44 @@ export fn rozes_filterNumeric(
             continue;
 
         const matches = switch (operator) {
-            0 => row_val == value, // equal
-            1 => row_val != value, // not equal
-            2 => row_val > value, // greater than
-            3 => row_val < value, // less than
-            4 => row_val >= value, // greater or equal
-            5 => row_val <= value, // less or equal
+            0 => row_val == value,
+            1 => row_val != value,
+            2 => row_val > value,
+            3 => row_val < value,
+            4 => row_val >= value,
+            5 => row_val <= value,
             else => false,
         };
 
         if (matches) match_count += 1;
     }
 
-    std.debug.assert(row_idx == MAX_ROWS);
+    std.debug.assert(row_idx == MAX_ITER);
+    return match_count;
+}
 
-    // Create new DataFrame
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
+/// Helper: Copy rows matching numeric filter condition to destination DataFrame
+fn copyMatchingRows(
+    src_df: *const DataFrame,
+    dst_df: *DataFrame,
+    col_name: []const u8,
+    operator: u8,
+    value: f64,
+) u32 {
+    std.debug.assert(operator <= 5);
+    std.debug.assert(src_df.row_count <= MAX_ROWS);
+    std.debug.assert(dst_df.columns.len == src_df.columns.len);
 
-    const capacity = if (match_count > 0) match_count else 1;
-    new_df_ptr.* = DataFrame.create(allocator, df.column_descs, capacity) catch |err| {
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
+    const series = src_df.column(col_name) orelse return 0;
+    const MAX_ITER: u32 = src_df.row_count;
 
-    // Second pass: copy matching rows
-    row_idx = 0;
+    const float_data = if (series.value_type == .Float64) series.asFloat64() else null;
+    const int_data = if (series.value_type == .Int64) series.asInt64() else null;
+
+    var row_idx: u32 = 0;
     var dst_idx: u32 = 0;
 
-    while (row_idx < MAX_ROWS) : (row_idx += 1) {
+    while (row_idx < MAX_ITER) : (row_idx += 1) {
         const row_val: f64 = if (float_data) |fdata|
             fdata[row_idx]
         else if (int_data) |idata|
@@ -1307,9 +1346,9 @@ export fn rozes_filterNumeric(
         if (matches) {
             // Copy all column values for this row
             var col_idx: usize = 0;
-            while (col_idx < df.columns.len) : (col_idx += 1) {
-                const src_col = &df.columns[col_idx];
-                const dst_col = &new_df_ptr.columns[col_idx];
+            while (col_idx < src_df.columns.len) : (col_idx += 1) {
+                const src_col = &src_df.columns[col_idx];
+                const dst_col = &dst_df.columns[col_idx];
 
                 switch (src_col.value_type) {
                     .Int64 => {
@@ -1335,7 +1374,57 @@ export fn rozes_filterNumeric(
         }
     }
 
-    std.debug.assert(dst_idx == match_count);
+    std.debug.assert(row_idx == MAX_ITER);
+    return dst_idx;
+}
+
+/// Filter DataFrame by simple numeric comparison
+/// operator: 0 = equal, 1 = not equal, 2 = greater than, 3 = less than, 4 = greater or equal, 5 = less or equal
+/// Returns handle to new filtered DataFrame
+export fn rozes_filterNumeric(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+    operator: u8,
+    value: f64,
+) i32 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+    std.debug.assert(operator <= 5);
+
+    const df = registry.get(handle) orelse {
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const allocator = getAllocator();
+
+    // Verify column exists and is numeric
+    const series = df.column(col_name) orelse {
+        return @intFromEnum(ErrorCode.ColumnNotFound);
+    };
+
+    if (series.value_type != .Float64 and series.value_type != .Int64) {
+        return @intFromEnum(ErrorCode.TypeMismatch);
+    }
+
+    // First pass: count matching rows
+    const match_count = countMatchingRows(df, col_name, operator, value);
+
+    // Create new DataFrame
+    const new_df_ptr = allocator.create(DataFrame) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    const capacity = if (match_count > 0) match_count else 1;
+    new_df_ptr.* = DataFrame.create(allocator, df.column_descs, capacity) catch |err| {
+        allocator.destroy(new_df_ptr);
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Second pass: copy matching rows
+    const copied = copyMatchingRows(df, new_df_ptr, col_name, operator, value);
+    std.debug.assert(copied == match_count);
 
     // Set row count
     new_df_ptr.setRowCount(match_count) catch |err| {
@@ -1992,22 +2081,19 @@ export fn rozes_dropna(handle: i32) i32 {
 ///   - handle: DataFrame handle
 ///   - col_name_ptr: Pointer to column name string
 ///   - col_name_len: Length of column name
-///   - out_ptr: Output pointer for boolean array
-///   - out_len: Output length
 ///
-/// Returns: 0 on success, error code on failure
+/// Returns: New DataFrame handle with boolean column "{column}_isna", or error code
 export fn rozes_isna(
     handle: i32,
     col_name_ptr: [*]const u8,
     col_name_len: u32,
-    out_ptr: *u32,
-    out_len: *u32,
 ) i32 {
     std.debug.assert(handle >= 0);
     std.debug.assert(handle < MAX_DATAFRAMES);
     std.debug.assert(col_name_len > 0);
 
     const df = registry.get(handle) orelse {
+        logError("isna: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
@@ -2020,32 +2106,61 @@ export fn rozes_isna(
         return @intFromEnum(ErrorCode.ColumnNotFound);
     };
 
-    // Get missing value mask
+    // Get missing value mask with original name
     const mask_series = missing.isna(col, allocator) catch |err| {
         logError("isna failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
-    defer allocator.free(mask_series.data.Bool);
 
-    const mask = mask_series.data.Bool;
-
-    // Allocate buffer for result
-    const result_buf = allocator.alloc(u8, mask.len) catch {
+    // Create new column name: "{column}_isna"
+    const new_col_name = std.fmt.allocPrint(allocator, "{s}_isna", .{col_name}) catch {
+        allocator.free(mask_series.data.Bool);
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
 
-    // Convert bool array to byte array
-    var i: u32 = 0;
-    while (i < mask.len) : (i += 1) {
-        result_buf[i] = if (mask[i]) 1 else 0;
-    }
-    // Post-condition: Converted all bool values
-    std.debug.assert(i == mask.len);
+    // Replace column in cloned DataFrame
+    var new_df = operations.replaceColumn(df, col_name, mask_series) catch |err| {
+        // Clean up series on error
+        allocator.free(mask_series.data.Bool);
+        allocator.free(new_col_name);
+        logError("isna: replaceColumn failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
 
-    out_ptr.* = @intFromPtr(result_buf.ptr);
-    out_len.* = @intCast(result_buf.len);
+    // Update column name in the new DataFrame (replaceColumn doesn't update names)
+    const col_index = new_df.columnIndex(col_name).?;
+    new_df.columns[col_index].name = new_col_name;
+    new_df.column_descs[col_index].name = new_col_name;
 
-    return @intFromEnum(ErrorCode.Success);
+    // Update column index hash map
+    const new_df_allocator = new_df.getAllocator();
+    _ = new_df.column_index.remove(col_name);
+    new_df.column_index.put(new_df_allocator, new_col_name, col_index) catch {
+        new_df.deinit();
+        allocator.free(new_col_name);
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    // Create DataFrame on heap
+    const new_df_ptr = allocator.create(DataFrame) catch {
+        new_df.deinit();
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    new_df_ptr.* = new_df;
+
+    // Register result
+    const new_handle = registry.register(new_df_ptr) catch {
+        new_df_ptr.deinit();
+        allocator.destroy(new_df_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0);
+    std.debug.assert(new_handle < MAX_DATAFRAMES);
+    std.debug.assert(new_handle != handle); // Must be different from input
+
+    return new_handle;
 }
 
 /// Check for non-missing values in a column
@@ -2054,22 +2169,19 @@ export fn rozes_isna(
 ///   - handle: DataFrame handle
 ///   - col_name_ptr: Pointer to column name string
 ///   - col_name_len: Length of column name
-///   - out_ptr: Output pointer for boolean array
-///   - out_len: Output length
 ///
-/// Returns: 0 on success, error code on failure
+/// Returns: New DataFrame handle with boolean column "{column}_notna", or error code
 export fn rozes_notna(
     handle: i32,
     col_name_ptr: [*]const u8,
     col_name_len: u32,
-    out_ptr: *u32,
-    out_len: *u32,
 ) i32 {
     std.debug.assert(handle >= 0);
     std.debug.assert(handle < MAX_DATAFRAMES);
     std.debug.assert(col_name_len > 0);
 
     const df = registry.get(handle) orelse {
+        logError("notna: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
@@ -2082,32 +2194,61 @@ export fn rozes_notna(
         return @intFromEnum(ErrorCode.ColumnNotFound);
     };
 
-    // Get non-missing value mask
+    // Get non-missing value mask with original name
     const mask_series = missing.notna(col, allocator) catch |err| {
         logError("notna failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
-    defer allocator.free(mask_series.data.Bool);
 
-    const mask = mask_series.data.Bool;
-
-    // Allocate buffer for result
-    const result_buf = allocator.alloc(u8, mask.len) catch {
+    // Create new column name: "{column}_notna"
+    const new_col_name = std.fmt.allocPrint(allocator, "{s}_notna", .{col_name}) catch {
+        allocator.free(mask_series.data.Bool);
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
 
-    // Convert bool array to byte array
-    var i: u32 = 0;
-    while (i < mask.len) : (i += 1) {
-        result_buf[i] = if (mask[i]) 1 else 0;
-    }
-    // Post-condition: Converted all bool values
-    std.debug.assert(i == mask.len);
+    // Replace column in cloned DataFrame
+    var new_df = operations.replaceColumn(df, col_name, mask_series) catch |err| {
+        // Clean up series on error
+        allocator.free(mask_series.data.Bool);
+        allocator.free(new_col_name);
+        logError("notna: replaceColumn failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
 
-    out_ptr.* = @intFromPtr(result_buf.ptr);
-    out_len.* = @intCast(result_buf.len);
+    // Update column name in the new DataFrame (replaceColumn doesn't update names)
+    const col_index = new_df.columnIndex(col_name).?;
+    new_df.columns[col_index].name = new_col_name;
+    new_df.column_descs[col_index].name = new_col_name;
 
-    return @intFromEnum(ErrorCode.Success);
+    // Update column index hash map
+    const new_df_allocator = new_df.getAllocator();
+    _ = new_df.column_index.remove(col_name);
+    new_df.column_index.put(new_df_allocator, new_col_name, col_index) catch {
+        new_df.deinit();
+        allocator.free(new_col_name);
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    // Create DataFrame on heap
+    const new_df_ptr = allocator.create(DataFrame) catch {
+        new_df.deinit();
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    new_df_ptr.* = new_df;
+
+    // Register result
+    const new_handle = registry.register(new_df_ptr) catch {
+        new_df_ptr.deinit();
+        allocator.destroy(new_df_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0);
+    std.debug.assert(new_handle < MAX_DATAFRAMES);
+    std.debug.assert(new_handle != handle); // Must be different from input
+
+    return new_handle;
 }
 
 // ============================================================================
@@ -2152,7 +2293,7 @@ export fn rozes_str_lower(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, lower_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, lower_series) catch |err| {
         // Clean up series on error
         allocator.free(lower_series.data.String.offsets);
         allocator.free(lower_series.data.String.buffer);
@@ -2161,25 +2302,10 @@ export fn rozes_str_lower(
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Convert string column to uppercase
@@ -2220,7 +2346,7 @@ export fn rozes_str_upper(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, upper_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, upper_series) catch |err| {
         // Clean up series on error
         allocator.free(upper_series.data.String.offsets);
         allocator.free(upper_series.data.String.buffer);
@@ -2229,25 +2355,10 @@ export fn rozes_str_upper(
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Trim leading and trailing whitespace from string column
@@ -2288,7 +2399,7 @@ export fn rozes_str_trim(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, trim_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, trim_series) catch |err| {
         // Clean up series on error
         allocator.free(trim_series.data.String.offsets);
         allocator.free(trim_series.data.String.buffer);
@@ -2297,25 +2408,10 @@ export fn rozes_str_trim(
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Check if string column contains substring
@@ -2362,32 +2458,17 @@ export fn rozes_str_contains(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, contains_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, contains_series) catch |err| {
         // Clean up series on error
         allocator.free(contains_series.data.Bool);
         logError("str_contains: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Replace substring in string column
@@ -2438,7 +2519,7 @@ export fn rozes_str_replace(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, replace_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, replace_series) catch |err| {
         // Clean up series on error
         allocator.free(replace_series.data.String.offsets);
         allocator.free(replace_series.data.String.buffer);
@@ -2447,25 +2528,10 @@ export fn rozes_str_replace(
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Extract substring from string column
@@ -2510,7 +2576,7 @@ export fn rozes_str_slice(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, slice_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, slice_series) catch |err| {
         // Clean up series on error
         allocator.free(slice_series.data.String.offsets);
         allocator.free(slice_series.data.String.buffer);
@@ -2519,25 +2585,10 @@ export fn rozes_str_slice(
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Get string lengths from string column
@@ -2578,32 +2629,17 @@ export fn rozes_str_len(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, len_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, len_series) catch |err| {
         // Clean up series on error
         allocator.free(len_series.data.Int64);
         logError("str_len: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Check if strings start with prefix
@@ -2650,32 +2686,17 @@ export fn rozes_str_startsWith(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, starts_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, starts_series) catch |err| {
         // Clean up series on error
         allocator.free(starts_series.data.Bool);
         logError("str_startsWith: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 /// Check if strings end with suffix
@@ -2722,32 +2743,17 @@ export fn rozes_str_endsWith(
     };
 
     // Replace column in cloned DataFrame
-    var new_df = operations.replaceColumn(df, col_name, ends_series) catch |err| {
+    const new_df = operations.replaceColumn(df, col_name, ends_series) catch |err| {
         // Clean up series on error
         allocator.free(ends_series.data.Bool);
         logError("str_endsWith: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Create DataFrame on heap
-    const new_df_ptr = allocator.create(DataFrame) catch {
-        new_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
+    // Register result using helper (reduces 30 lines → 5 lines)
+    return registerDataFrameResult(allocator, new_df) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
     };
-
-    new_df_ptr.* = new_df;
-
-    // Register result
-    const new_handle = registry.register(new_df_ptr) catch {
-        new_df_ptr.deinit();
-        allocator.destroy(new_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    std.debug.assert(new_handle < MAX_DATAFRAMES);
-
-    return new_handle;
 }
 
 
@@ -3144,7 +3150,6 @@ export fn rozes_corrMatrix(
         }
     } else {
         // Use all numeric columns
-        const MAX_COLUMNS: u32 = 1000;
         var col_idx: u32 = 0;
         while (col_idx < df.columns.len and col_idx < MAX_COLUMNS) : (col_idx += 1) {
             const col_desc = df.columns[col_idx];
@@ -3717,29 +3722,54 @@ var lazy_registry_initialized = false;
 var next_lazy_handle: i32 = 0;
 
 fn initLazyRegistry() void {
+    // Tiger Style: Assertions
+    std.debug.assert(@intFromPtr(&lazy_registry) != 0); // Registry pointer valid
+    std.debug.assert(next_lazy_handle >= 0); // Handle counter valid
+
     if (!lazy_registry_initialized) {
         const allocator = getAllocator();
         lazy_registry = std.AutoHashMap(i32, *LazyDataFrame).init(allocator);
         lazy_registry_initialized = true;
     }
+
+    // Post-condition
+    std.debug.assert(lazy_registry_initialized == true);
 }
 
 fn registerLazy(lazy_df: *LazyDataFrame) !i32 {
+    // Tiger Style: Assertions
+    std.debug.assert(@intFromPtr(lazy_df) != 0); // Non-null pointer
+    std.debug.assert(next_lazy_handle >= 0); // Valid handle counter
+
     initLazyRegistry();
     const handle = next_lazy_handle;
     next_lazy_handle += 1;
     try lazy_registry.put(handle, lazy_df);
+
+    // Post-condition
+    std.debug.assert(handle >= 0);
     return handle;
 }
 
 fn getLazy(handle: i32) ?*LazyDataFrame {
+    // Tiger Style: Assertions
+    std.debug.assert(handle >= 0); // Valid handle
+    std.debug.assert(handle < 1_000_000); // Reasonable handle range
+
     if (!lazy_registry_initialized) return null;
     return lazy_registry.get(handle);
 }
 
 fn unregisterLazy(handle: i32) void {
+    // Tiger Style: Assertions
+    std.debug.assert(handle >= 0); // Valid handle
+    std.debug.assert(handle < 1_000_000); // Reasonable handle range
+
     if (!lazy_registry_initialized) return;
-    _ = lazy_registry.remove(handle);
+    const existed = lazy_registry.remove(handle);
+
+    // Post-condition: Verify removal (if registry was initialized)
+    std.debug.assert(!existed or lazy_registry.get(handle) == null);
 }
 
 /// Create LazyDataFrame from DataFrame (defers execution)
@@ -3846,7 +3876,9 @@ export fn rozes_collect(lazy_handle: i32) i32 {
 
 /// Free LazyDataFrame
 export fn rozes_lazy_free(lazy_handle: i32) void {
+    // Tiger Style: Assertions
     std.debug.assert(lazy_handle >= 0);
+    std.debug.assert(lazy_handle < 1_000_000); // Reasonable handle range
 
     const lazy_df = getLazy(lazy_handle) orelse return;
 
@@ -3855,6 +3887,9 @@ export fn rozes_lazy_free(lazy_handle: i32) void {
     allocator.destroy(lazy_df);
 
     unregisterLazy(lazy_handle);
+
+    // Post-condition: LazyDataFrame removed from registry
+    std.debug.assert(getLazy(lazy_handle) == null);
 }
 
 // ============================================================================
@@ -3917,6 +3952,10 @@ fn parseArrowSchemaFromJSON(
     allocator: std.mem.Allocator,
     json: []const u8,
 ) !arrow_ipc.RecordBatch {
+    // Tiger Style: Pre-condition assertions
+    std.debug.assert(json.len > 0);
+    std.debug.assert(json.len < 1_000_000); // Reasonable JSON size limit
+
     // MVP: Simple JSON parsing (not production-quality parser)
     // Expected format: {"schema": {"fields": [...], "row_count": 100}}
 
@@ -3924,9 +3963,26 @@ fn parseArrowSchemaFromJSON(
     var row_count: u32 = 0;
     if (std.mem.indexOf(u8, json, "\"row_count\":")) |pos| {
         var i = pos + 12; // Skip "row_count":
-        while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
+
+        // FIXED: Bounded whitespace skip
+        const MAX_WHITESPACE_SKIP: u32 = 32;
+        var ws_count: u32 = 0;
+        while (i < json.len and (json[i] == ' ' or json[i] == '\t') and ws_count < MAX_WHITESPACE_SKIP) : ({
+            i += 1;
+            ws_count += 1;
+        }) {}
+        std.debug.assert(ws_count < MAX_WHITESPACE_SKIP); // Post-loop assertion
+
+        // FIXED: Bounded number parsing
+        const MAX_NUMBER_LENGTH: u32 = 32; // u32 max is 10 digits, allow padding
         var end = i;
-        while (end < json.len and json[end] >= '0' and json[end] <= '9') : (end += 1) {}
+        var num_len: u32 = 0;
+        while (end < json.len and json[end] >= '0' and json[end] <= '9' and num_len < MAX_NUMBER_LENGTH) : ({
+            end += 1;
+            num_len += 1;
+        }) {}
+        std.debug.assert(num_len < MAX_NUMBER_LENGTH); // Post-loop assertion
+
         const num_str = json[i..end];
         row_count = std.fmt.parseInt(u32, num_str, 10) catch 0;
     }
@@ -3935,15 +3991,32 @@ fn parseArrowSchemaFromJSON(
     const fields_start = std.mem.indexOf(u8, json, "\"fields\":[") orelse return error.InvalidFormat;
     const fields_end = std.mem.lastIndexOf(u8, json, "]") orelse return error.InvalidFormat;
 
-    // Count fields (count commas + 1, accounting for nested objects)
+    // FIXED: Bounded field counting with depth tracking
+    const MAX_FIELD_PARSE_LENGTH: u32 = 100_000;
     var field_count: u32 = if (fields_end > fields_start + 10) 1 else 0;
     var depth: u32 = 0;
     var i = fields_start + 10;
-    while (i < fields_end) : (i += 1) {
-        if (json[i] == '{') depth += 1;
-        if (json[i] == '}') depth -= 1;
-        if (json[i] == ',' and depth == 1) field_count += 1;
+    var parse_len: u32 = 0;
+
+    while (i < fields_end and parse_len < MAX_FIELD_PARSE_LENGTH) : ({
+        i += 1;
+        parse_len += 1;
+    }) {
+        if (json[i] == '{') {
+            depth += 1;
+        } else if (json[i] == '}') {
+            if (depth == 0) return error.InvalidFormat; // Prevent underflow
+            depth -= 1;
+        } else if (json[i] == ',' and depth == 1) {
+            field_count += 1;
+        }
     }
+
+    // Tiger Style: Post-loop assertions
+    std.debug.assert(parse_len < MAX_FIELD_PARSE_LENGTH); // Didn't hit limit
+    std.debug.assert(i <= fields_end); // Didn't overflow
+    std.debug.assert(depth == 0); // Balanced braces
+    std.debug.assert(field_count <= 10_000); // Reasonable field count
 
     // Create Arrow schema
     var schema = try arrow_schema.ArrowSchema.init(allocator, field_count);
@@ -3953,5 +4026,10 @@ fn parseArrowSchemaFromJSON(
     // For MVP, assume schema only (no data validation)
 
     // Create RecordBatch with schema
-    return arrow_ipc.RecordBatch.init(allocator, schema, row_count);
+    const batch = try arrow_ipc.RecordBatch.init(allocator, schema, row_count);
+
+    // Tiger Style: Post-condition assertion
+    std.debug.assert(batch.row_count == row_count);
+
+    return batch;
 }

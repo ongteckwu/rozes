@@ -1,0 +1,17 @@
+{
+  "name": "rozes-example-ml-data-prep",
+  "version": "1.0.0",
+  "description": "ML data preparation example with Rozes: feature engineering, encoding, normalization",
+  "main": "index.js",
+  "scripts": {
+    "generate-data": "node generate-sample-data.js",
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "keywords": ["rozes", "dataframe", "ml", "feature-engineering", "encoding", "normalization"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "file:../../../rozes-1.3.0.tgz"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "rozes-typescript-examples",
+  "version": "1.0.0",
+  "description": "TypeScript examples for Rozes DataFrame library",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "csv-export": "node --loader ts-node/esm csv_export.ts",
+    "missing-data": "node --loader ts-node/esm missing_data.ts",
+    "string-ops": "node --loader ts-node/esm string_ops.ts",
+    "advanced-agg": "node --loader ts-node/esm advanced_agg.ts",
+    "window-ops": "node --loader ts-node/esm window_ops.ts",
+    "reshape": "node --loader ts-node/esm reshape.ts",
+    "arrow-interop": "node --loader ts-node/esm arrow_interop.ts",
+    "lazy-eval": "node --loader ts-node/esm lazy_evaluation.ts"
+  },
+  "keywords": [
+    "dataframe",
+    "typescript",
+    "examples",
+    "rozes"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

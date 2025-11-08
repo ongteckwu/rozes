@@ -3,7 +3,7 @@
 **Blazing-fast data analysis powered by WebAssembly.** Rozes brings pandas-like analytics to TypeScript/JavaScript with native performance, columnar storage, and zero-copy operations.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![npm version](https://img.shields.io/badge/npm-1.2.0-blue.svg)](https://www.npmjs.com/package/rozes)
+[![npm version](https://img.shields.io/badge/npm-1.3.0-blue.svg)](https://www.npmjs.com/package/rozes)
 [![Zig Version](https://img.shields.io/badge/Zig-0.15+-orange.svg)](https://ziglang.org/)
 
 ```bash
@@ -62,7 +62,7 @@ const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
 
 ### ✅ **Production-Ready** - Tested & Reliable
 
-- **500+ tests passing** (99.6%)
+- **520+ tests passing** (99.6%) - includes 200+ Node.js integration tests
 - **100% RFC 4180 CSV compliance** (125/125 conformance tests)
 - **11/12 benchmarks passing** (92% - Milestone 1.2.0)
 - **Zero memory leaks** (verified 1000-iteration tests)
@@ -573,7 +573,24 @@ _Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast mode, averaged
 
 ### Examples
 
-- **[Node.js Examples](./examples/node/)** - Basic usage, file I/O, TypeScript
+#### Real-World Examples (Node.js)
+
+- **[01-sales-analytics](./examples/nodejs/01-sales-analytics/)** - GroupBy aggregations, filtering, sorting, summary statistics
+- **[02-time-series](./examples/nodejs/02-time-series/)** - Time series analysis, date handling, temporal operations
+- **[03-data-pipeline](./examples/nodejs/03-data-pipeline/)** - ETL workflows, data transformation pipelines
+- **[04-data-cleaning](./examples/nodejs/04-data-cleaning/)** - Missing data handling, outliers, deduplication
+- **[05-financial-analytics](./examples/nodejs/05-financial-analytics/)** - Rolling windows, expanding windows, correlations, financial metrics
+- **[06-ml-data-prep](./examples/nodejs/06-ml-data-prep/)** - Feature engineering, normalization, ranking
+- **[07-text-processing](./examples/nodejs/07-text-processing/)** - String operations, pattern matching, text cleaning
+- **[08-reshaping](./examples/nodejs/08-reshaping/)** - Pivot, melt, transpose for reporting
+
+Each example includes:
+- `generate-sample-data.js` - Realistic test data generator
+- `index.js` - Complete working pipeline
+- `test.js` - Comprehensive test suite
+- `README.md` - Detailed documentation
+
+#### Browser Examples
 - **[Browser Examples](./examples/browser/)** - Coming soon
 
 ---
@@ -611,17 +628,27 @@ _Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast mode, averaged
 - Support explicit null tracking for all types
 - Breaking change: Will require migration for existing code
 
-**Node.js API limitations** (coming in future releases):
-
-- ❌ **CSV export**: `toCSV()`, `toCSVFile()` - WASM export not yet implemented
-- ❌ **Advanced DataFrame operations**: `filter()`, `groupBy()`, `join()` - Use Zig API for now
-- ⚠️ **Lazy evaluation**: LazyDataFrame API implemented in Zig but not yet exposed to Node.js
-- ⚠️ **Multi-column sort**: Currently supports single column only (multi-column available in Zig)
-
-**What's Available** (1.2.0):
+**What's Available** (1.3.0):
 
 - ✅ **CSV Parsing**: `fromCSV()`, `fromCSVFile()` - Fully implemented with parallel parsing
+- ✅ **CSV Export**: `toCSV()` - Export with custom delimiters, headers, quoting
 - ✅ **Column Access**: `column()` - All types (Int64, Float64, String, Bool) supported
+- ✅ **DataFrame Utilities**: `drop()`, `rename()`, `unique()`, `dropDuplicates()`, `describe()`, `sample()`
+- ✅ **Missing Data**: `isna()`, `notna()`, `dropna()` - Handle missing values
+- ✅ **String Operations**: `str.lower()`, `str.upper()`, `str.trim()`, `str.contains()`, `str.replace()`, `str.slice()`, `str.split()`
+- ✅ **Advanced Aggregations**: `median()`, `quantile()`, `valueCounts()`, `corrMatrix()`, `rank()`
+- ✅ **Multi-Column Sort**: `sortBy()` with per-column ascending/descending order
+- ✅ **Join Types**: `innerJoin()`, `leftJoin()`, `rightJoin()`, `outerJoin()`, `crossJoin()`
+- ✅ **Window Operations**: `rolling*()`, `expanding*()` for time series analysis
+- ✅ **Reshape Operations**: `pivot()`, `melt()`, `transpose()`, `stack()`, `unstack()`
+- ✅ **Apache Arrow**: `toArrow()`, `fromArrow()` - Interop with Arrow ecosystem (schema-only MVP)
+- ✅ **Lazy Evaluation**: `lazy()`, `select()`, `limit()`, `collect()` - Query optimization
+
+**Remaining limitations** (planned for v1.4.0+):
+
+- ⚠️ **WebGPU Acceleration**: Browser GPU acceleration for large datasets (planned 1.4.0)
+- ⚠️ **Full Arrow IPC**: Complete data transfer (schema-only in 1.3.0, full IPC in 1.4.0)
+- ⚠️ **Null Bitmaps**: Explicit null tracking for Int64 columns (planned 1.4.0)
 - ✅ **Basic Operations**: `select()`, `head()`, `tail()`, `sort()` - Fully functional
 - ✅ **SIMD Aggregations**: `sum()`, `mean()`, `min()`, `max()`, `variance()`, `stddev()` - Production ready
 

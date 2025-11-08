@@ -91,6 +91,28 @@ export interface DataFrameShape {
 }
 
 /**
+ * Apache Arrow schema format
+ *
+ * Note: MVP implementation uses schema-only JSON format.
+ * Full Arrow IPC RecordBatch format coming in future release.
+ */
+export interface ArrowSchema {
+  schema: {
+    fields: Array<{
+      name: string;
+      type: {
+        name: 'utf8' | 'int' | 'floatingpoint' | 'bool' | 'null';
+        bitWidth?: number;
+        isSigned?: boolean;
+        precision?: 'DOUBLE' | 'SINGLE';
+      };
+      nullable?: boolean;
+      metadata?: Record<string, string>;
+    }>;
+  };
+}
+
+/**
  * Rozes error codes
  */
 export enum ErrorCode {
@@ -953,6 +975,80 @@ export class DataFrame {
   }): DataFrame;
 
   /**
+   * Export DataFrame schema to Apache Arrow JSON format
+   *
+   * Note: MVP implementation exports schema only (not data).
+   * Full Arrow IPC format with zero-copy data transfer coming in future release.
+   *
+   * @returns Arrow schema as JSON object
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("name,age\nAlice,30\nBob,25\n");
+   * const arrowSchema = df.toArrow();
+   * console.log(arrowSchema);
+   * // {
+   * //   schema: {
+   * //     fields: [
+   * //       { name: 'name', type: { name: 'utf8' } },
+   * //       { name: 'age', type: { name: 'int', bitWidth: 64, isSigned: true } }
+   * //     ]
+   * //   }
+   * // }
+   * df.free();
+   * ```
+   */
+  toArrow(): ArrowSchema;
+
+  /**
+   * Import DataFrame from Apache Arrow JSON schema
+   *
+   * Note: MVP implementation imports schema only (not data).
+   * Full Arrow IPC format with zero-copy data transfer coming in future release.
+   *
+   * @param arrowSchema - Arrow schema as JSON object
+   * @param autoCleanup - Enable automatic memory cleanup (default: true)
+   * @returns New DataFrame from Arrow schema
+   *
+   * @example
+   * ```typescript
+   * const schema = {
+   *   schema: {
+   *     fields: [
+   *       { name: 'name', type: { name: 'utf8' } },
+   *       { name: 'age', type: { name: 'int', bitWidth: 64, isSigned: true } }
+   *     ]
+   *   }
+   * };
+   * const df = DataFrame.fromArrow(schema);
+   * df.free();
+   * ```
+   */
+  static fromArrow(arrowSchema: ArrowSchema, autoCleanup?: boolean): DataFrame;
+
+  /**
+   * Create a lazy DataFrame for query optimization
+   *
+   * Lazy evaluation delays execution until `.collect()` is called,
+   * allowing the query optimizer to apply transformations like
+   * predicate pushdown and projection pushdown.
+   *
+   * @returns LazyDataFrame wrapper
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV("name,age,score\nAlice,30,95\nBob,25,87\nCharlie,35,91\n");
+   * const result = df.lazy()
+   *   .select(['name', 'age'])
+   *   .limit(2)
+   *   .collect();
+   * console.log(result.shape); // { rows: 2, cols: 2 }
+   * result.free();
+   * ```
+   */
+  lazy(): LazyDataFrame;
+
+  /**
    * Free DataFrame memory
    *
    * **Automatic memory management (autoCleanup: true, default):**
@@ -1375,6 +1471,96 @@ export interface StringAccessor {
    * ```
    */
   endsWith(columnName: string, suffix: string): DataFrame;
+}
+
+/**
+ * LazyDataFrame - Lazy evaluation wrapper for query optimization
+ *
+ * Delays execution until `.collect()` is called, allowing the query
+ * optimizer to apply transformations like predicate pushdown and
+ * projection pushdown for improved performance.
+ *
+ * @example
+ * ```typescript
+ * const df = DataFrame.fromCSV("name,age,score\nAlice,30,95\nBob,25,87\nCharlie,35,91\n");
+ * const result = df.lazy()
+ *   .select(['name', 'age'])
+ *   .limit(2)
+ *   .collect();
+ * console.log(result.shape); // { rows: 2, cols: 2 }
+ * result.free();
+ * ```
+ */
+export class LazyDataFrame {
+  /**
+   * Add a select (projection) operation to the query plan
+   *
+   * Selects specific columns from the DataFrame. Combined with other
+   * operations, enables projection pushdown optimization.
+   *
+   * @param columnNames - Array of column names to select
+   * @returns This LazyDataFrame for chaining
+   *
+   * @example
+   * ```typescript
+   * const result = df.lazy()
+   *   .select(['name', 'age'])
+   *   .collect();
+   * result.free();
+   * ```
+   */
+  select(columnNames: string[]): LazyDataFrame;
+
+  /**
+   * Add a limit operation to the query plan
+   *
+   * Limits the number of rows returned. Can be optimized by the query
+   * planner to avoid processing unnecessary rows.
+   *
+   * @param n - Maximum number of rows to return
+   * @returns This LazyDataFrame for chaining
+   *
+   * @example
+   * ```typescript
+   * const result = df.lazy()
+   *   .limit(10)
+   *   .collect();
+   * result.free();
+   * ```
+   */
+  limit(n: number): LazyDataFrame;
+
+  /**
+   * Execute the query plan and return a DataFrame
+   *
+   * Applies query optimizations (predicate pushdown, projection pushdown)
+   * and executes all operations to produce the final DataFrame.
+   *
+   * Note: LazyDataFrame is consumed after collect() and cannot be reused.
+   *
+   * @returns Resulting DataFrame after optimization and execution
+   *
+   * @example
+   * ```typescript
+   * const result = df.lazy()
+   *   .select(['name', 'age'])
+   *   .limit(2)
+   *   .collect();
+   * console.log(result.shape); // { rows: 2, cols: 2 }
+   * result.free();
+   * ```
+   */
+  collect(): DataFrame;
+
+  /**
+   * Manually free LazyDataFrame memory
+   *
+   * After calling free(), this LazyDataFrame cannot be used.
+   * If autoCleanup is enabled, this happens automatically on garbage collection.
+   *
+   * Note: LazyDataFrame is automatically freed after collect().
+   */
+  free(): void;
 }
 
 /**

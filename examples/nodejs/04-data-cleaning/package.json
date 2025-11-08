@@ -1,0 +1,25 @@
+{
+  "name": "rozes-example-data-cleaning",
+  "version": "1.0.0",
+  "description": "Data cleaning example with Rozes: missing data, outliers, deduplication",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "generate-data": "node generate-sample-data.js",
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "rozes",
+    "dataframe",
+    "data-cleaning",
+    "missing-data",
+    "outliers",
+    "deduplication"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "file:../../../rozes-1.0.1.tgz"
+  }
+}

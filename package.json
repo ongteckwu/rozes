@@ -3,14 +3,14 @@
   "version": "1.0.1",
   "description": "High-performance DataFrame library powered by WebAssembly - 3-10× faster than Papa Parse",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "require": "./dist/index.cjs"
     }
   },
   "files": [
@@ -24,7 +24,7 @@
     "build": "zig build",
     "build:wasm": "zig build -Doptimize=ReleaseSmall",
     "test": "zig build test",
-    "test:node": "for file in src/test/nodejs/*.test.js; do echo \"Running $file...\"; node \"$file\" || exit 1; done",
+    "test:node": "find src/test/nodejs -name '*_test.js' -o -name '*.test.js' | grep -v benchmark | xargs -I {} sh -c 'echo \"\\n=== Running {} ===\" && node \"{}\"'",
     "benchmark": "zig build benchmark",
     "benchmark:js": "node src/test/benchmark/compare_js.js"
   },

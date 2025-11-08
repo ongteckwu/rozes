@@ -1,0 +1,17 @@
+{
+  "name": "rozes-example-reshaping",
+  "version": "1.0.0",
+  "description": "Reshaping example with Rozes: pivot, melt, transpose for reporting",
+  "main": "index.js",
+  "scripts": {
+    "generate-data": "node generate-sample-data.js",
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "keywords": ["rozes", "dataframe", "pivot", "melt", "transpose", "reshape"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "file:../../../rozes-1.3.0.tgz"
+  }
+}

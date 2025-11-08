@@ -264,6 +264,81 @@ pub fn contains(series: *const Series, allocator: Allocator, pattern: []const u8
 }
 
 /// Replace all occurrences of a substring
+/// Helper: Count all occurrences of pattern in string
+fn countOccurrences(str: []const u8, pattern: []const u8) u32 {
+    std.debug.assert(pattern.len > 0);
+    std.debug.assert(str.len <= MAX_STRING_LENGTH);
+
+    var count: u32 = 0;
+    var pos: usize = 0;
+
+    while (pos < str.len) {
+        if (std.mem.indexOf(u8, str[pos..], pattern)) |idx| {
+            count += 1;
+            pos += idx + pattern.len;
+        } else {
+            break;
+        }
+    }
+
+    return count;
+}
+
+/// Helper: Replace all occurrences of from with to in string
+fn replaceString(allocator: Allocator, str: []const u8, from: []const u8, to: []const u8, count: u32) ![]u8 {
+    std.debug.assert(from.len > 0);
+    std.debug.assert(count > 0);
+    std.debug.assert(str.len <= MAX_STRING_LENGTH);
+
+    // Tiger Style: Overflow check with wider type
+    const count_u64 = @as(u64, count);
+    const from_len_u64 = @as(u64, from.len);
+    const to_len_u64 = @as(u64, to.len);
+    const str_len_u64 = @as(u64, str.len);
+
+    const removed_bytes = count_u64 * from_len_u64;
+    const added_bytes = count_u64 * to_len_u64;
+
+    // Check for underflow
+    if (str_len_u64 < removed_bytes) {
+        return error.InvalidCalculation;
+    }
+
+    const new_len_u64 = str_len_u64 - removed_bytes + added_bytes;
+
+    // Check against max string length
+    if (new_len_u64 > MAX_STRING_LENGTH) {
+        return error.StringTooLong;
+    }
+
+    const new_len: usize = @intCast(new_len_u64);
+    const replaced = try allocator.alloc(u8, new_len);
+    errdefer allocator.free(replaced);
+
+    var write_pos: usize = 0;
+    var read_pos: usize = 0;
+
+    while (read_pos < str.len) {
+        if (std.mem.indexOf(u8, str[read_pos..], from)) |idx| {
+            // Copy before match
+            @memcpy(replaced[write_pos .. write_pos + idx], str[read_pos .. read_pos + idx]);
+            write_pos += idx;
+
+            // Copy replacement
+            @memcpy(replaced[write_pos .. write_pos + to.len], to);
+            write_pos += to.len;
+
+            read_pos += idx + from.len;
+        } else {
+            // Copy remaining
+            @memcpy(replaced[write_pos..], str[read_pos..]);
+            break;
+        }
+    }
+
+    return replaced;
+}
+
 pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to: []const u8) !Series {
     // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
@@ -271,9 +346,7 @@ pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to
 
     // Tiger Style: Assertions AFTER error checks
     std.debug.assert(series.value_type == .String);
-    std.debug.assert(from.len > 0); // Post-condition from error check
-    // NOTE: series.length can be 0 for empty DataFrames
-    // Individual strings can also be empty (length 0)
+    std.debug.assert(from.len > 0);
 
     const strings = series.data.String;
 
@@ -282,8 +355,7 @@ pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to
     var i: u32 = 0;
     while (i < series.length) : (i += 1) {
         const str = strings.get(i);
-        // Assume worst case: replacement might be longer
-        total_len += @intCast(str.len + to.len * 10); // Generous estimate
+        total_len += @intCast(str.len + to.len * 10);
     }
 
     // Create output StringColumn
@@ -295,69 +367,17 @@ pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to
     while (i < series.length) : (i += 1) {
         const str = strings.get(i);
 
-        // Count occurrences to allocate result
-        var count: u32 = 0;
-        var pos: usize = 0;
-        while (pos < str.len) {
-            if (std.mem.indexOf(u8, str[pos..], from)) |idx| {
-                count += 1;
-                pos += idx + from.len;
-            } else {
-                break;
-            }
-        }
+        // Count occurrences
+        const count = countOccurrences(str, from);
 
         if (count == 0) {
-            // No matches, append original
             try result_col.append(allocator, str);
             continue;
         }
 
-        // Allocate new string with replacements
-        // Tiger Style: Overflow check with wider type
-        const count_u64 = @as(u64, count);
-        const from_len_u64 = @as(u64, from.len);
-        const to_len_u64 = @as(u64, to.len);
-        const str_len_u64 = @as(u64, str.len);
-
-        const removed_bytes = count_u64 * from_len_u64;
-        const added_bytes = count_u64 * to_len_u64;
-
-        // Check for underflow
-        if (str_len_u64 < removed_bytes) {
-            return error.InvalidCalculation; // Should never happen
-        }
-
-        const new_len_u64 = str_len_u64 - removed_bytes + added_bytes;
-
-        // Check against max string length
-        if (new_len_u64 > MAX_STRING_LENGTH) {
-            return error.StringTooLong;
-        }
-
-        const new_len: usize = @intCast(new_len_u64);
-        const replaced = try allocator.alloc(u8, new_len);
+        // Replace all occurrences
+        const replaced = try replaceString(allocator, str, from, to, count);
         defer allocator.free(replaced);
-
-        var write_pos: usize = 0;
-        var read_pos: usize = 0;
-        while (read_pos < str.len) {
-            if (std.mem.indexOf(u8, str[read_pos..], from)) |idx| {
-                // Copy before match
-                @memcpy(replaced[write_pos .. write_pos + idx], str[read_pos .. read_pos + idx]);
-                write_pos += idx;
-
-                // Copy replacement
-                @memcpy(replaced[write_pos .. write_pos + to.len], to);
-                write_pos += to.len;
-
-                read_pos += idx + from.len;
-            } else {
-                // Copy remaining
-                @memcpy(replaced[write_pos..], str[read_pos..]);
-                break;
-            }
-        }
 
         try result_col.append(allocator, replaced);
     }
