@@ -27,6 +27,12 @@ zig-cache/** linguist-generated=true
 zig-out/** linguist-generated=true
 node_modules/** linguist-vendored=true
 
+# JavaScript wrappers are build artifacts (generated from Zig)
+js/rozes.js linguist-generated=true
+
+# Test files are documentation (excluded from language stats)
+src/test/** linguist-documentation=true
+
 # Mark test data as vendored (excluded from language stats)
 testdata/** linguist-vendored=true
 testdata/**/*.csv linguist-vendored=true
